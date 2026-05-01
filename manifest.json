@@ -1,0 +1,12 @@
+{
+   "name": "PlatformIndicators",
+   "version": "1.0.0",
+   "description": "Adds platform indicators (Desktop, Mobile, Web...) to users",
+   "authors": [
+      {
+         "name": "rolex7exe",
+         "id": "460344197849808897"
+      }
+   ],
+   "color": "#e74c3c"
+}
