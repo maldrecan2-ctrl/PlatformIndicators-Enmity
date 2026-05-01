@@ -27,8 +27,6 @@ const PlatformIndicators: Plugin = {
       }
 
       const getPlatformIcons = (userId: string) => {
-          // DEBUG: Eğer Store'lar bulunamadıysa kırmızı bir soru işareti gösterelim
-          // Bu sayede UI yamasının çalışıp çalışmadığını ama veritabanının eksik olduğunu anlarız.
           if (!PresenceStore || !UserStore) {
               return <Text style={{ color: 'red', fontSize: 12 }}> [?] </Text>;
           }
@@ -52,10 +50,10 @@ const PlatformIndicators: Plugin = {
                   }
               }
           } catch(e) {
-              return <Text style={{ color: 'orange', fontSize: 12 }}> [!] </Text>; // Okurken hata çıktı
+              return <Text style={{ color: 'orange', fontSize: 12 }}> [!] </Text>; 
           }
           
-          if (!statuses) return null; // Çevrimdışı veya durum yok
+          if (!statuses) return null;
           
           const platforms = Object.keys(statuses);
           if (platforms.length === 0) return null;
@@ -76,66 +74,78 @@ const PlatformIndicators: Plugin = {
           );
       };
 
+      // GÜÇLÜ YAMA FONKSİYONU: React.memo() veya objeleri sarmalamak için
+      const patchReactComponent = (module: any, propName: string, patchCallback: any) => {
+          if (!module || !module[propName]) return;
+          const component = module[propName];
+          
+          if (typeof component === "function") {
+              Patcher.after(module, propName, patchCallback);
+          } else if (typeof component === "object") {
+              if (typeof component.type === "function") {
+                  Patcher.after(component, "type", patchCallback);
+              } else if (typeof component.render === "function") {
+                  Patcher.after(component, "render", patchCallback);
+              } else if (typeof component.default === "function") {
+                  Patcher.after(component, "default", patchCallback);
+              }
+          }
+      };
+
       // 1. Üyeler Listesi (GuildMemberRow)
       const GuildMemberModule = getByProps("GuildMemberRow");
       if (GuildMemberModule) {
-          const patchFunc = GuildMemberModule.GuildMemberRow ? "GuildMemberRow" : (GuildMemberModule.default ? "default" : null);
-          if (patchFunc) {
-              Patcher.after(GuildMemberModule, patchFunc as any, (self, args, res) => {
-                  try {
-                      const user = args[0]?.user;
-                      if (!user) return res;
+          patchReactComponent(GuildMemberModule, "GuildMemberRow", (self: any, args: any, res: any) => {
+              try {
+                  const user = args[0]?.user;
+                  if (!user) return res;
 
-                      const icons = getPlatformIcons(user.id);
-                      if (!icons) return res;
+                  const icons = getPlatformIcons(user.id);
+                  if (!icons) return res;
 
-                      if (res && res.props) {
-                          const originalChildren = res.props.children;
-                          res.props.children = (
-                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
-                                  <View style={{ flex: 1 }}>{originalChildren}</View>
-                                  {icons}
-                              </View>
-                          );
-                      }
-                  } catch (e) {}
-                  return res;
-              });
-          }
+                  if (res && res.props) {
+                      const originalChildren = res.props.children;
+                      res.props.children = (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
+                              <View style={{ flex: 1 }}>{originalChildren}</View>
+                              {icons}
+                          </View>
+                      );
+                  }
+              } catch (e) {}
+              return res;
+          });
       }
 
       // 2. Kullanıcı Satırı (UserRow)
       const UserRowModule = getByProps("UserRow");
       if (UserRowModule) {
-          const patchFunc = UserRowModule.UserRow ? "UserRow" : (UserRowModule.default ? "default" : null);
-          if (patchFunc) {
-              Patcher.after(UserRowModule, patchFunc as any, (self, args, res) => {
-                  try {
-                      const user = args[0]?.user;
-                      if (!user) return res;
+          patchReactComponent(UserRowModule, "UserRow", (self: any, args: any, res: any) => {
+              try {
+                  const user = args[0]?.user;
+                  if (!user) return res;
 
-                      const icons = getPlatformIcons(user.id);
-                      if (!icons) return res;
+                  const icons = getPlatformIcons(user.id);
+                  if (!icons) return res;
 
-                      if (res && res.props) {
-                          const originalChildren = res.props.children;
-                          res.props.children = (
-                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                  <View style={{ flex: 1 }}>{originalChildren}</View>
-                                  {icons}
-                              </View>
-                          );
-                      }
-                  } catch (e) {}
-                  return res;
-              });
-          }
+                  if (res && res.props) {
+                      const originalChildren = res.props.children;
+                      res.props.children = (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                              <View style={{ flex: 1 }}>{originalChildren}</View>
+                              {icons}
+                          </View>
+                      );
+                  }
+              } catch (e) {}
+              return res;
+          });
       }
 
       // 3. Sohbet Mesajı İsimleri (MessageHeader / MessageTimestamp)
       const MessageHeader = getByProps("MessageTimestamp");
-      if (MessageHeader && MessageHeader.default) {
-          Patcher.after(MessageHeader, "default", (self, args, res) => {
+      if (MessageHeader) {
+          patchReactComponent(MessageHeader, "default", (self: any, args: any, res: any) => {
               try {
                   const message = args[0]?.message;
                   if (!message || !message.author) return res;
@@ -161,8 +171,8 @@ const PlatformIndicators: Plugin = {
       
       // 4. Profil Sayfası İsmi (DisplayName)
       const DisplayName = getByProps("DisplayName");
-      if (DisplayName && DisplayName.default) {
-          Patcher.after(DisplayName, "default", (self, args, res) => {
+      if (DisplayName) {
+          patchReactComponent(DisplayName, "default", (self: any, args: any, res: any) => {
               try {
                   const user = args[0]?.user;
                   if (!user) return res;
