@@ -11,42 +11,51 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // API'den doğrudan getiremediğimiz Store'ları Enmity'nin global objesi üzerinden adlarıyla kesin olarak alıyoruz
-      const getStore = (name: string) => {
-          try {
-              return (window as any).enmity?.metro?.getByStoreName?.(name) || null;
-          } catch (e) {
-              return null;
-          }
-      };
+      // Olabildiğince çok alternatifle Store'ları arıyoruz
+      let PresenceStore = getByProps("getState", "getPresence") || getByProps("getStatus", "getActivities");
+      let SessionStore = getByProps("getSessions") || getByProps("getSession");
+      let UserStore = getByProps("getCurrentUser") || getByProps("getUser", "getUsers");
 
-      const PresenceStore = getStore("PresenceStore");
-      const SessionStore = getStore("SessionsStore");
-      const UserStore = getStore("UserStore");
+      if (!PresenceStore) {
+          try { PresenceStore = (window as any).enmity?.metro?.getByStoreName?.("PresenceStore"); } catch(e){}
+      }
+      if (!UserStore) {
+          try { UserStore = (window as any).enmity?.metro?.getByStoreName?.("UserStore"); } catch(e){}
+      }
+      if (!SessionStore) {
+          try { SessionStore = (window as any).enmity?.metro?.getByStoreName?.("SessionsStore"); } catch(e){}
+      }
 
       const getPlatformIcons = (userId: string) => {
-          if (!PresenceStore || !UserStore) return null;
-          
-          let statuses;
-          const currentUser = UserStore.getCurrentUser();
-          
-          if (currentUser && userId === currentUser.id && SessionStore) {
-              const sessions = SessionStore.getSessions() || {};
-              statuses = {};
-              Object.values(sessions).forEach((s: any) => {
-                  if (s.clientInfo && s.clientInfo.client !== "unknown") {
-                      statuses[s.clientInfo.client] = s.status;
-                  }
-              });
-          } else {
-              // Diğer kullanıcılar
-              const state = PresenceStore.getState();
-              if (state && state.clientStatuses) {
-                  statuses = state.clientStatuses[userId];
-              }
+          // DEBUG: Eğer Store'lar bulunamadıysa kırmızı bir soru işareti gösterelim
+          // Bu sayede UI yamasının çalışıp çalışmadığını ama veritabanının eksik olduğunu anlarız.
+          if (!PresenceStore || !UserStore) {
+              return <Text style={{ color: 'red', fontSize: 12 }}> [?] </Text>;
           }
           
-          if (!statuses) return null;
+          let statuses;
+          try {
+              const currentUser = UserStore.getCurrentUser();
+              
+              if (currentUser && userId === currentUser.id && SessionStore) {
+                  const sessions = SessionStore.getSessions() || {};
+                  statuses = {};
+                  Object.values(sessions).forEach((s: any) => {
+                      if (s.clientInfo && s.clientInfo.client !== "unknown") {
+                          statuses[s.clientInfo.client] = s.status;
+                      }
+                  });
+              } else {
+                  const state = PresenceStore.getState();
+                  if (state && state.clientStatuses) {
+                      statuses = state.clientStatuses[userId];
+                  }
+              }
+          } catch(e) {
+              return <Text style={{ color: 'orange', fontSize: 12 }}> [!] </Text>; // Okurken hata çıktı
+          }
+          
+          if (!statuses) return null; // Çevrimdışı veya durum yok
           
           const platforms = Object.keys(statuses);
           if (platforms.length === 0) return null;
@@ -61,67 +70,69 @@ const PlatformIndicators: Plugin = {
           if (icons.length === 0) return null;
 
           return (
-              <View style={{ flexDirection: 'row', marginLeft: 6, alignItems: 'center', justifyContent: 'center' }}>
-                  <Text style={{ fontSize: 14 }}>{icons.join(" ")}</Text>
+              <View style={{ flexDirection: 'row', marginLeft: 4, alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ fontSize: 12 }}>{icons.join(" ")}</Text>
               </View>
           );
       };
 
-      // Üyeler Listesi (Member List) Yaması - Orijinal Vendetta yöntemini kullanıyoruz
-      const GuildMemberRow = getByProps("GuildMemberRow");
-      if (GuildMemberRow && GuildMemberRow.GuildMemberRow) {
-          Patcher.after(GuildMemberRow, "GuildMemberRow", (self, args, res) => {
-              try {
-                  const user = args[0]?.user;
-                  if (!user) return res;
+      // 1. Üyeler Listesi (GuildMemberRow)
+      const GuildMemberModule = getByProps("GuildMemberRow");
+      if (GuildMemberModule) {
+          const patchFunc = GuildMemberModule.GuildMemberRow ? "GuildMemberRow" : (GuildMemberModule.default ? "default" : null);
+          if (patchFunc) {
+              Patcher.after(GuildMemberModule, patchFunc as any, (self, args, res) => {
+                  try {
+                      const user = args[0]?.user;
+                      if (!user) return res;
 
-                  const icons = getPlatformIcons(user.id);
-                  if (!icons) return res;
+                      const icons = getPlatformIcons(user.id);
+                      if (!icons) return res;
 
-                  if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 8 }}>
-                              <View style={{ flex: 1 }}>{originalChildren}</View>
-                              {icons}
-                          </View>
-                      );
-                  }
-              } catch (e) {}
-              return res;
-          });
-      }
-
-      // Ayrıca UserRow kullanan daha yeni versiyonlar için yedek yama
-      try {
-          const enmityMetro = (window as any).enmity?.metro;
-          if (enmityMetro && enmityMetro.findByTypeNameAll) {
-              const UserRows = enmityMetro.findByTypeNameAll("UserRow");
-              UserRows.forEach((UserRow: any) => {
-                  Patcher.after(UserRow, "type", (self, args, res) => {
-                      try {
-                          const user = args[0]?.user;
-                          if (!user) return res;
-                          const icons = getPlatformIcons(user.id);
-                          if (!icons) return res;
-
-                          if (res && res.props) {
-                              const originalChildren = res.props.children;
-                              res.props.children = (
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                      <View style={{ flex: 1 }}>{originalChildren}</View>
-                                      {icons}
-                                  </View>
-                              );
-                          }
-                      } catch(e) {}
-                      return res;
-                  });
+                      if (res && res.props) {
+                          const originalChildren = res.props.children;
+                          res.props.children = (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
+                                  <View style={{ flex: 1 }}>{originalChildren}</View>
+                                  {icons}
+                              </View>
+                          );
+                      }
+                  } catch (e) {}
+                  return res;
               });
           }
-      } catch(e) {}
+      }
 
-      // Sohbet içi mesajlarda ismi değiştiren yedek yama (chatte görünmesi için)
+      // 2. Kullanıcı Satırı (UserRow)
+      const UserRowModule = getByProps("UserRow");
+      if (UserRowModule) {
+          const patchFunc = UserRowModule.UserRow ? "UserRow" : (UserRowModule.default ? "default" : null);
+          if (patchFunc) {
+              Patcher.after(UserRowModule, patchFunc as any, (self, args, res) => {
+                  try {
+                      const user = args[0]?.user;
+                      if (!user) return res;
+
+                      const icons = getPlatformIcons(user.id);
+                      if (!icons) return res;
+
+                      if (res && res.props) {
+                          const originalChildren = res.props.children;
+                          res.props.children = (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                  <View style={{ flex: 1 }}>{originalChildren}</View>
+                                  {icons}
+                              </View>
+                          );
+                      }
+                  } catch (e) {}
+                  return res;
+              });
+          }
+      }
+
+      // 3. Sohbet Mesajı İsimleri (MessageHeader / MessageTimestamp)
       const MessageHeader = getByProps("MessageTimestamp");
       if (MessageHeader && MessageHeader.default) {
           Patcher.after(MessageHeader, "default", (self, args, res) => {
@@ -134,6 +145,39 @@ const PlatformIndicators: Plugin = {
 
                   if (res && res.props && Array.isArray(res.props.children)) {
                       res.props.children.push(icons);
+                  } else if (res && res.props) {
+                      const originalChildren = res.props.children;
+                      res.props.children = (
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              {originalChildren}
+                              {icons}
+                          </View>
+                      );
+                  }
+              } catch(e) {}
+              return res;
+          });
+      }
+      
+      // 4. Profil Sayfası İsmi (DisplayName)
+      const DisplayName = getByProps("DisplayName");
+      if (DisplayName && DisplayName.default) {
+          Patcher.after(DisplayName, "default", (self, args, res) => {
+              try {
+                  const user = args[0]?.user;
+                  if (!user) return res;
+
+                  const icons = getPlatformIcons(user.id);
+                  if (!icons) return res;
+
+                  if (res && res.props) {
+                      const originalChildren = res.props.children;
+                      res.props.children = (
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              {originalChildren}
+                              {icons}
+                          </View>
+                      );
                   }
               } catch(e) {}
               return res;
