@@ -9,22 +9,37 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // Orijinal Enmity kütüphanesi üzerinden Store'ları bulalım
-      const getStore = (name: string) => {
-          try {
-              return (window as any).enmity?.metro?.getByStoreName?.(name) || null;
-          } catch (e) {
-              return null;
-          }
+      // ÖNEMLİ DÜZELTME: Discord modülleri uygulama ilk açıldığında hemen yüklenmez.
+      // Bu yüzden modülleri en başta değil, ihtiyaç duyduğumuzda anlık olarak (dinamik) arıyoruz.
+      let cachedPresenceStore: any = null;
+      let cachedSessionStore: any = null;
+      let cachedUserStore: any = null;
+
+      const getPresenceStore = () => {
+          if (cachedPresenceStore) return cachedPresenceStore;
+          cachedPresenceStore = (window as any).enmity?.metro?.getByStoreName?.("PresenceStore") || getByProps("getState", "getPresence") || getByProps("clientStatuses");
+          return cachedPresenceStore;
       };
 
-      const PresenceStore = getStore("PresenceStore") || getByProps("getState", "getPresence");
-      const SessionStore = getStore("SessionsStore") || getByProps("getSessions");
-      const UserStore = getStore("UserStore") || getByProps("getCurrentUser");
+      const getSessionStore = () => {
+          if (cachedSessionStore) return cachedSessionStore;
+          cachedSessionStore = (window as any).enmity?.metro?.getByStoreName?.("SessionsStore") || getByProps("getSessions");
+          return cachedSessionStore;
+      };
 
-      // İkonları oluşturan yardımcı fonksiyon
+      const getUserStore = () => {
+          if (cachedUserStore) return cachedUserStore;
+          cachedUserStore = (window as any).enmity?.metro?.getByStoreName?.("UserStore") || getByProps("getUser", "getCurrentUser");
+          return cachedUserStore;
+      };
+
       const getPlatformString = (userId: string) => {
-          if (!PresenceStore || !UserStore) return " [❓]"; // Store bulunamadıysa soru işareti
+          const PresenceStore = getPresenceStore();
+          const UserStore = getUserStore();
+          const SessionStore = getSessionStore();
+
+          // Hala bulunamazsa (ki bu imkansız olmalı), hata göster.
+          if (!PresenceStore || !UserStore) return " [❓]";
           
           let statuses;
           try {
@@ -65,8 +80,6 @@ const PlatformIndicators: Plugin = {
           return " " + icons.join("");
       };
 
-      // KESİN ÇÖZÜM: Arayüz (UI) Yamalarını çöpe atıp, Veri Akışına (FluxDispatcher) sızıyoruz.
-      // Discord'un nesneleri dondurulmuş (frozen) olabileceği için her zaman kopyasını (clone) oluşturarak değiştiriyoruz.
       const FluxDispatcher = getByProps("dispatch", "subscribe");
       
       if (FluxDispatcher) {
@@ -75,7 +88,6 @@ const PlatformIndicators: Plugin = {
                   const event = args[0];
                   if (!event) return;
 
-                  // 1. Sohbet Mesajlarında İsimlerin Yanına Ekle
                   if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
                       if (event.message && event.message.author) {
                           const iconsStr = getPlatformString(event.message.author.id);
@@ -84,7 +96,6 @@ const PlatformIndicators: Plugin = {
                               const currentGlobalName = author.global_name || author.username;
                               
                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                  // Objenin donukluğunu kırmak için kopyalıyoruz
                                   event.message = {
                                       ...event.message,
                                       author: {
@@ -97,7 +108,6 @@ const PlatformIndicators: Plugin = {
                           }
                       }
                   } 
-                  // Geçmiş mesajları yüklerken
                   else if (event.type === "LOAD_MESSAGES_SUCCESS") {
                       if (Array.isArray(event.messages)) {
                           event.messages = event.messages.map((m: any) => {
@@ -121,7 +131,6 @@ const PlatformIndicators: Plugin = {
                           });
                       }
                   }
-                  // 2. Üye Listesinde İsimlerin Yanına Ekle (Guild Member List)
                   else if (event.type === "GUILD_MEMBER_LIST_UPDATE") {
                       if (Array.isArray(event.groups)) {
                           event.groups.forEach((group: any) => {
@@ -134,7 +143,6 @@ const PlatformIndicators: Plugin = {
                                               const currentGlobalName = user.global_name || user.username;
                                               
                                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                                  // Objenin kopyasını al
                                                   item.member = {
                                                       ...item.member,
                                                       user: {
