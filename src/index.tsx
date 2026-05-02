@@ -1,5 +1,5 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
-import { getByProps, getByTypeName, getModule } from 'enmity/metro';
+import { getByProps, getByTypeName } from 'enmity/metro';
 import { Toasts, React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
 import { getIDByName } from 'enmity/api/assets';
@@ -25,7 +25,7 @@ const PlatformIndicators: Plugin = {
     onStart() {
         const SessionStore = getByProps("getSessions", "getSession");
         const UserStore    = getByProps("getUser", "getCurrentUser");
-        const { View, Image } = getByProps("View", "Image") || {};
+        const { View, Image, Text } = getByProps("View", "Image", "Text") || {};
 
         if (!SessionStore || !UserStore || !View || !Image) return;
 
@@ -47,76 +47,97 @@ const PlatformIndicators: Plugin = {
                 const id = (assetIds as any)[client];
                 if (!id) return null;
                 return React.createElement(Image, {
-                    key: `pi_${i}`, source: id,
+                    key: `pi_${i}`,
+                    source: id,
                     style: { width: 14, height: 14, marginLeft: 3, tintColor: statusColors[status] ?? statusColors.online }
                 });
             }).filter(Boolean);
             if (!icons.length) return null;
-            return React.createElement(View, { style: { flexDirection: "row", alignItems: "center" } }, ...icons);
+            return React.createElement(View, {
+                key: "pi_icons",
+                style: { flexDirection: "row", alignItems: "center", marginLeft: 4 }
+            }, ...icons);
         };
 
-        const patchAfter = (mod: any, fnName: string) => {
-            if (!mod || !mod[fnName]) return false;
-            try {
-                Patcher.after(mod, fnName, (_s: any, args: any[], res: any) => {
-                    try {
-                        const user = args[0]?.user || args[0]?.message?.author || args[0]?.member?.user;
-                        const current = UserStore.getCurrentUser?.();
-                        if (!user || !current || user.id !== current.id) return res;
-                        const sessions = getActiveSessions();
-                        const iconRow = buildIconRow(sessions);
-                        if (!iconRow || !res?.props) return res;
-                        const ch = res.props.children;
-                        if (Array.isArray(ch)) res.props.children = [...ch, iconRow];
-                        else res.props.children = [ch, iconRow];
-                    } catch {}
-                    return res;
-                });
-                return true;
-            } catch { return false; }
-        };
+        // ── 1. UserRow ──────────────────────────────────────────────────────────
+        // DM listesindeki kullanıcı satırı
+        const UserRowModule = getByTypeName("UserRow", { default: true });
+        if (UserRowModule?.default) {
+            Patcher.after(UserRowModule, "default", (_s: any, args: any[], res: any) => {
+                try {
+                    const current = UserStore.getCurrentUser?.();
+                    if (!current || !res?.props) return res;
 
-        // Deneyeceğimiz tüm TypeName'ler (Discord'un farklı sürümlerinde bunlardan biri çalışır)
-        const typeNames = [
-            "MemberListItem", "GuildMemberRow", "UserRow", "UserSummaryItem",
-            "MessageUsername", "UserTag", "ChatProfile", "ProfileHeader",
-            "NameTag", "UsernameTag", "UserNameTag", "Avatar", "UserAvatar",
-        ];
+                    // UserRow'da user birden fazla yerde olabilir
+                    const props = args[0] ?? {};
+                    const userId: string = 
+                        props?.user?.id ??
+                        props?.userId ??
+                        props?.id ??
+                        res?.props?.user?.id ??
+                        "";
 
-        const found: string[] = [];
-        for (const name of typeNames) {
-            try {
-                const mod = getByTypeName(name, { default: true });
-                if (mod) {
-                    const ok = patchAfter(mod, "default") || patchAfter(mod, "render") || patchAfter(mod, "type");
-                    if (ok) found.push(name);
-                }
-            } catch {}
+                    if (!userId || userId !== current.id) return res;
+
+                    const sessions = getActiveSessions();
+                    const iconRow = buildIconRow(sessions);
+                    if (!iconRow) return res;
+
+                    // res'in en dıştaki View'ının children'ına ekle
+                    const ch = res.props.children;
+                    if (Array.isArray(ch)) {
+                        if (ch.some((c: any) => c?.key === "pi_icons")) return res;
+                        res.props.children = [...ch, iconRow];
+                    } else {
+                        res.props.children = [ch, iconRow];
+                    }
+                } catch(e) {}
+                return res;
+            });
         }
 
-        // getByProps ile de dene
-        const propCombos = [
-            ["colorUsername"], ["renderMember"], ["usernameColor"],
-            ["renderUsername"], ["getNickOrUserName"], ["getUserTag"],
-        ];
-        for (const props of propCombos) {
-            try {
-                const mod = getByProps(...props);
-                if (mod) {
-                    const ok = patchAfter(mod, "default") || patchAfter(mod, "render");
-                    if (ok) found.push(props.join(","));
-                }
-            } catch {}
+        // ── 2. getUserTag ───────────────────────────────────────────────────────
+        // Kullanıcı tag'i (BOT gibi) döndüren fonksiyon — isme yanına küçük ikon eklemek için ideal
+        const getUserTagModule = getByTypeName("getUserTag", { default: true }) ||
+                                 getByProps("getUserTag");
+        if (getUserTagModule) {
+            const fnName = getUserTagModule.getUserTag ? "getUserTag" : "default";
+            Patcher.after(getUserTagModule, fnName, (_s: any, args: any[], res: any) => {
+                try {
+                    const current = UserStore.getCurrentUser?.();
+                    if (!current) return res;
+
+                    // getUserTag'e geçilen user id
+                    const userId: string = args[0]?.id ?? args[0]?.userId ?? args[0] ?? "";
+                    if (!userId || userId !== current.id) return res;
+
+                    const sessions = getActiveSessions();
+                    const iconRow = buildIconRow(sessions);
+                    if (!iconRow) return res;
+
+                    // Tag elementi yoksa sadece ikonları döndür
+                    if (!res) return iconRow;
+
+                    // Tag elementi varsa yanına ekle
+                    return React.createElement(View, {
+                        style: { flexDirection: "row", alignItems: "center" }
+                    }, res, iconRow);
+                } catch(e) {}
+                return res;
+            });
         }
 
-        // Sonucu Toast ile göster (kaç komponent bulundu)
+        // ── 3. Teşhis Toast ─────────────────────────────────────────────────────
         setTimeout(() => {
-            if (found.length > 0) {
-                Toasts.open({ content: `PI 2.8: ${found.length} komponent bulundu: ${found.slice(0, 3).join(", ")}` });
-            } else {
-                Toasts.open({ content: "PI 2.8: Hiç komponent bulunamadı :(" });
-            }
-        }, 3000);
+            const current = UserStore.getCurrentUser?.();
+            const sessions = getActiveSessions();
+            const assetStr = Object.entries(assetIds)
+                .map(([k, v]) => `${k}:${v ? "✓" : "✗"}`)
+                .join(" ");
+            Toasts.open({ 
+                content: `PI2.9 | user:${current?.id?.slice(-4)} sess:${sessions.length} | ${assetStr}`
+            });
+        }, 2000);
     },
 
     onStop() { Patcher.unpatchAll(); }
