@@ -1,7 +1,7 @@
 {
    "name": "PlatformIndicators",
-   "version": "3.2.0",
-   "description": "Adds platform indicators (Desktop, Mobile, Web...) to users",
+   "version": "3.3.0",
+   "description": "Shows active platforms in profile pronouns field only",
    "authors": [
       {
          "name": "rolex7exe",

@@ -5,7 +5,6 @@ import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
 
-// Platform adları — emoji yok, temiz metin
 const clientNames: Record<string, string> = {
     desktop:  "Desktop",
     mobile:   "Phone",
@@ -23,7 +22,6 @@ const PlatformIndicators: Plugin = {
 
         if (!UserStore) return;
 
-        // Aktif platformları "Phone · Desktop" formatında döndür
         const buildPlatformText = (): string => {
             if (!SessionStore) return "";
             try {
@@ -37,46 +35,40 @@ const PlatformIndicators: Plugin = {
                         names.push(clientNames[client]);
                     }
                 }
-                return names.length > 0 ? " [" + names.join(" · ") + "]" : "";
+                return names.join(" · ");  // örn: "Phone · Desktop"
             } catch { return ""; }
         };
 
-        // getCurrentUser — profil sayfasına her girilişte tetiklenir (KANIT: 2.3.0'da çalıştı)
+        // ── getCurrentUser ────────────────────────────────────────────────────
+        // SADECE pronouns alanını değiştiriyoruz.
+        // Discord pronoms alanını YALNIZCA profil sayfasında gösterir — sohbette ASLA çıkmaz.
+        // username ve globalName'e dokunmuyoruz → chat etkilenmez.
         Patcher.after(UserStore, "getCurrentUser", (_s: any, _a: any, res: any) => {
             try {
-                if (!res?.username) return res;
+                if (!res) return res;
                 const text = buildPlatformText();
                 if (!text) return res;
 
-                // Daha önce eklendiyse tekrar ekleme
-                if (res.username.includes("[") && res.username.includes("]")) return res;
-
                 return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
-                    username:   res.username + text,
-                    globalName: res.globalName
-                        ? res.globalName + text
-                        : res.globalName,
+                    pronouns: text,  // "Phone · Desktop" gibi temiz metin
                 });
             } catch {}
             return res;
         });
 
-        // getUser — başkaları bize baktığında da görsün
+        // ── getUser ───────────────────────────────────────────────────────────
+        // Başkası profilimizdeki pronoms'u gördüğünde de aynı şeyi döndür
         Patcher.after(UserStore, "getUser", (_s: any, args: any[], res: any) => {
             try {
-                if (!res?.username) return res;
+                if (!res) return res;
                 const current = UserStore.getCurrentUser?.();
                 if (!current || res.id !== current.id) return res;
 
                 const text = buildPlatformText();
                 if (!text) return res;
-                if (res.username.includes("[") && res.username.includes("]")) return res;
 
                 return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
-                    username:   res.username + text,
-                    globalName: res.globalName
-                        ? res.globalName + text
-                        : res.globalName,
+                    pronouns: text,
                 });
             } catch {}
             return res;
