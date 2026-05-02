@@ -23,22 +23,28 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // YENİ GÖREV: Orijinal Discord SVG logolarını yüklemek.
-      // Mesaj metnine (string) SVG resmi koyamayacağımız için metin düzenleme yöntemini sildim.
-      // Artık sadece ekranın "Profil" ve "Üye Listesi" gibi React bölümlerine (UI) doğrudan
-      // SVG vektör çizimlerini yapıştırıyoruz.
-
+      // 1. GEREKSİNİMLERİ GÜVENLİ ARAMA (Çökmemesi için)
       const SessionStore = getByProps("getSessions", "getSession");
       const UserStore = getByProps("getUser", "getCurrentUser");
-      const { View } = getByProps("View", "Text") || {};
-      const SvgModule = getByProps("Svg", "Path") || getByProps("Svg");
+      const { View, Text } = getByProps("View", "Text") || {};
+      
+      if (!SessionStore || !UserStore || !View || !Text) return;
 
-      if (!SessionStore || !UserStore || !View || !SvgModule) return;
-
-      const Svg = SvgModule.Svg || SvgModule.default || SvgModule;
-      const Path = SvgModule.Path;
-
-      if (!Svg || !Path) return;
+      // Svg ve Path modüllerini Discord içinde bulmak için alternatif yollar
+      let Svg: any = null;
+      let Path: any = null;
+      
+      const svgMod1 = getByProps("Svg", "Path");
+      if (svgMod1) { Svg = svgMod1.Svg || svgMod1.default; Path = svgMod1.Path; }
+      
+      if (!Svg) {
+          const svgMod2 = getByProps("Svg", "Rect");
+          Svg = svgMod2?.Svg || svgMod2?.default;
+      }
+      if (!Path) {
+          const pathMod = getByProps("Path", "Rect");
+          Path = pathMod?.Path || pathMod?.default;
+      }
 
       const getMyPlatformIcons = () => {
           try {
@@ -58,6 +64,22 @@ const PlatformIndicators: Plugin = {
               
               if (activeClients.length === 0) return null;
 
+              // Eğer SVG modülünü bulamazsak HATA VERMESİN DİYE normal emojiye dön (Hata tespiti için)
+              if (!Svg || !Path) {
+                  let fallbackStr = "";
+                  activeClients.forEach(c => {
+                      if (c.client === "mobile") fallbackStr += String.fromCodePoint(0x1F4F1);
+                      if (c.client === "desktop") fallbackStr += String.fromCodePoint(0x1F4BB);
+                      if (c.client === "web") fallbackStr += String.fromCodePoint(0x1F310);
+                  });
+                  return (
+                      <View style={{ flexDirection: "row", alignItems: "center", marginLeft: 4 }}>
+                          <Text style={{ fontSize: 14 }}>{fallbackStr}</Text>
+                      </View>
+                  );
+              }
+
+              // SVG modülü varsa orijinal vektörleri çiz
               return (
                   <View style={{ flexDirection: "row", alignItems: "center", marginLeft: 4 }}>
                       {activeClients.map((c, i) => (
@@ -136,6 +158,29 @@ const PlatformIndicators: Plugin = {
               return res;
           });
       }
+      
+      // 3. SOHBET PROFİLİ (Kullanıcı Adına Tıklayınca Açılan Yer)
+      const ChatProfile = getByProps("ChatProfile");
+      if (ChatProfile && ChatProfile.default) {
+          Patcher.after(ChatProfile, "default", (self, args, res) => {
+              try {
+                  const user = args[0]?.user;
+                  const currentUser = UserStore.getCurrentUser();
+                  if (user && currentUser && user.id === currentUser.id) {
+                      const iconElements = getMyPlatformIcons();
+                      if (iconElements && res && res.props && Array.isArray(res.props.children)) {
+                          res.props.children.push(
+                              <View style={{ position: "absolute", top: 10, right: 10 }}>
+                                  {iconElements}
+                              </View>
+                          );
+                      }
+                  }
+              } catch(e) {}
+              return res;
+          });
+      }
+
    },
 
    onStop() {
