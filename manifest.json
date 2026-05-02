@@ -1,6 +1,6 @@
 {
    "name": "PlatformIndicators",
-   "version": "1.9.0",
+   "version": "2.0.0",
    "description": "Adds platform indicators (Desktop, Mobile, Web...) to users",
    "authors": [
       {

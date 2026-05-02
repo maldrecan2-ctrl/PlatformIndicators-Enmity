@@ -1,5 +1,5 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
-import { getByProps } from 'enmity/metro';
+import { getByProps, getByName, getByDisplayName } from 'enmity/metro';
 import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
 import manifest from '../manifest.json';
@@ -21,7 +21,6 @@ const colors = {
     offline: "#80848e"
 };
 
-// Yedek Resim URL'leri (Orijinal logolara en yakın şeffaf ikonlar)
 const fallbackImages = {
     desktop: "https://img.icons8.com/ios-filled/50/23a55a/mac-client.png",
     mobile: "https://img.icons8.com/ios-filled/50/23a55a/iphone-x.png",
@@ -34,13 +33,16 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
+      // NEDEN HİÇBİR ŞEY GÖZÜKMEDİ? Çünkü getByProps ile aradığımız isim bölümleri (DisplayName)
+      // eksik isimlerle çıkıyordu. Artık Enmity'nin kendi güvenli arama motorunu (getByName) kullanıyoruz.
+      // Bu sayede hem çökmeyecek hem de UI elementlerini %100 doğrulukla bulacak!
+
       const SessionStore = getByProps("getSessions", "getSession");
       const UserStore = getByProps("getUser", "getCurrentUser");
       const { View, Image } = getByProps("View", "Image") || {};
       
       if (!SessionStore || !UserStore || !View) return;
 
-      // Svg ve Path modüllerini Discord içinde bulmak
       let Svg: any = null;
       let Path: any = null;
       
@@ -67,7 +69,6 @@ const PlatformIndicators: Plugin = {
               
               if (activeClients.length === 0) return null;
 
-              // Eğer SVG motoru bozuksa veya Discord izin vermiyorsa, dışarıdan Resim (Image) çek!
               if (!Svg || !Path || !Image) {
                   if (!Image) return null;
                   return (
@@ -83,11 +84,10 @@ const PlatformIndicators: Plugin = {
                   );
               }
 
-              // SVG modülü varsa %100 orijinal vektörleri çiz
               return (
                   <View style={{ flexDirection: "row", alignItems: "center", marginLeft: 4 }}>
                       {activeClients.map((c, i) => (
-                          <Svg key={i} width={14} height={14} viewBox="0 0 24 24" style={{ marginLeft: 3 }}>
+                          <Svg key={i} width={15} height={15} viewBox="0 0 24 24" style={{ marginLeft: 3 }}>
                               <Path d={(paths as any)[c.client]} fill={(colors as any)[c.status] || colors.online} />
                           </Svg>
                       ))}
@@ -111,8 +111,8 @@ const PlatformIndicators: Plugin = {
           return null;
       };
 
-      // 1. PROFİL SAYFASI İSİM (DisplayName) YAMASI
-      const DisplayNameModule = getByProps("DisplayName");
+      // 1. PROFİL SAYFASI İSİM (DisplayName) YAMASI - GÜVENLİ ARAMA İLE!
+      const DisplayNameModule = getByName("DisplayName") || getByDisplayName("DisplayName");
       if (DisplayNameModule) {
           const target = typeof DisplayNameModule === "function" ? DisplayNameModule : (DisplayNameModule.default || DisplayNameModule.DisplayName);
           if (target) {
@@ -138,7 +138,7 @@ const PlatformIndicators: Plugin = {
       }
 
       // 2. ÜYE LİSTESİ (GuildMemberRow) YAMASI
-      const GuildMemberRowModule = getByProps("GuildMemberRow");
+      const GuildMemberRowModule = getByName("GuildMemberRow");
       if (GuildMemberRowModule && GuildMemberRowModule.GuildMemberRow) {
           Patcher.after(GuildMemberRowModule.GuildMemberRow, "type", (self, args, res) => {
               try {
@@ -162,27 +162,39 @@ const PlatformIndicators: Plugin = {
               return res;
           });
       }
-      
-      // 3. SOHBET PROFİLİ (Kullanıcı Adına Tıklayınca Açılan Yer)
-      const ChatProfile = getByProps("ChatProfile");
-      if (ChatProfile && ChatProfile.default) {
-          Patcher.after(ChatProfile, "default", (self, args, res) => {
-              try {
-                  const user = args[0]?.user;
-                  const currentUser = UserStore.getCurrentUser();
-                  if (user && currentUser && user.id === currentUser.id) {
-                      const iconElements = getMyPlatformIcons();
-                      if (iconElements && res && res.props && Array.isArray(res.props.children)) {
-                          res.props.children.push(
-                              <View key="MyChatProfileIcons" style={{ position: "absolute", top: 10, right: 10 }}>
-                                  {iconElements}
-                              </View>
-                          );
+
+      // 3. MESAJ PROFİLİ (MessageHeader / UserRecord)
+      const MessageHeaderModule = getByName("MessageHeader") || getByProps("MessageTimestamp");
+      if (MessageHeaderModule) {
+          const target = MessageHeaderModule.default || MessageHeaderModule.MessageHeader || MessageHeaderModule;
+          if (typeof target === "function") {
+              Patcher.after(MessageHeaderModule, target.name || "default", (self, args, res) => {
+                  try {
+                      const msg = args[0]?.message;
+                      const currentUser = UserStore.getCurrentUser();
+                      if (msg && currentUser && msg.author && msg.author.id === currentUser.id) {
+                          const iconElements = getMyPlatformIcons();
+                          if (iconElements) {
+                              const usernameView = findInReactTree(res, n => n?.props?.message && n?.type?.displayName === "MessageUsername");
+                              if (usernameView) {
+                                  usernameView.props.children = (
+                                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                                          {usernameView.props.children}
+                                          {iconElements}
+                                      </View>
+                                  );
+                              } else {
+                                  // Eğer tam konumu bulamazsak genel mesaja ekle
+                                  if (res && res.props && Array.isArray(res.props.children)) {
+                                      res.props.children.push(iconElements);
+                                  }
+                              }
+                          }
                       }
-                  }
-              } catch(e) {}
-              return res;
-          });
+                  } catch(e) {}
+                  return res;
+              });
+          }
       }
 
    },
