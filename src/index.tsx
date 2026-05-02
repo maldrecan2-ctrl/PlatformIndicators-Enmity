@@ -1,79 +1,117 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
 import { getByProps } from 'enmity/metro';
+import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
+import { getIDByName } from 'enmity/api/assets';
 import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
+
+// Toast bildirimine göre Discord'un gerçek asset isimleri:
+const assetIds = {
+    mobile:   getIDByName("StatusMobileOnline"),
+    desktop:  getIDByName("ic_monitor"),
+    web:      getIDByName("ic_globe_24px") || getIDByName("ic_globe") || getIDByName("ic_web"),
+    embedded: getIDByName("ic_controller_24px") || getIDByName("ic_controller") || getIDByName("ic_gamepad_24px"),
+    vr:       getIDByName("ic_vr_24px") || getIDByName("ic_vr"),
+};
+
+const statusColors: Record<string, string> = {
+    online:  "#23a55a",
+    idle:    "#f0b232",
+    dnd:     "#f23f43",
+    offline: "#80848e",
+};
 
 const PlatformIndicators: Plugin = {
     ...manifest,
 
     onStart() {
-        // ŞEYTANI DEHA YAKLAŞIMI:
-        // Discord zaten diğer kullanıcılar için platform ikonlarını (📱 gibi) kendisi çiziyor.
-        // Bu çizimi tetikleyen fonksiyon: PresenceStore.getClientStatus(userId)
-        // Bu fonksiyon { mobile: "online", desktop: "dnd" } gibi bir obje döndürüyor.
-        // Discord bu objeyi alıp kendi orijinal ikonlarını çiziyor.
-        // BİZ SADECE KENDİ USER ID'MİZ İÇİN BU FONKSİYONA KENDİ OTURUM VERİMİZİ VERİYORUZ.
-        // Discord gerisini halleder. Crash yok, SVG yok, emoji yok. Tamamen orijinal ikonlar!
+        const SessionStore = getByProps("getSessions", "getSession");
+        const UserStore    = getByProps("getUser", "getCurrentUser");
 
-        const SessionStore  = getByProps("getSessions", "getSession");
-        const UserStore     = getByProps("getUser", "getCurrentUser");
-        const PresenceStore = getByProps("getClientStatus", "getStatus");
+        // phone-plugin trae taktiği: TouchableOpacity.render yamala
+        const TOModule = getByProps("TouchableOpacity");
+        const { View, Image } = getByProps("View", "Image") || {};
 
-        if (!SessionStore || !UserStore || !PresenceStore) return;
+        if (!SessionStore || !UserStore || !TOModule || !View || !Image) return;
 
-        // Kendi aktif oturumlarımızı Discord'un beklediği formata çevir
-        // Format: { desktop: "online", mobile: "dnd" }
-        const buildClientStatus = (): Record<string, string> | null => {
+        const TO = TOModule.default || TOModule.TouchableOpacity || TOModule;
+        if (!TO || !TO.prototype) return;
+
+        // Aktif oturumları al
+        const getActiveSessions = (): { client: string; status: string }[] => {
             try {
                 const sessions = SessionStore.getSessions() || {};
-                const clientStatus: Record<string, string> = {};
+                const seen = new Set<string>();
+                const result: { client: string; status: string }[] = [];
                 for (const s of Object.values(sessions) as any[]) {
                     const client: string = s?.clientInfo?.client;
                     const status: string = s?.status ?? "online";
-                    if (client) {
-                        clientStatus[client] = status;
+                    if (client && !seen.has(client)) {
+                        seen.add(client);
+                        result.push({ client, status });
                     }
                 }
-                return Object.keys(clientStatus).length > 0 ? clientStatus : null;
-            } catch { return null; }
+                return result;
+            } catch { return []; }
         };
 
-        // PresenceStore.getClientStatus'u yakala
-        // Discord her kullanıcı için bunu çağırır. Sadece kendi ID'miz için kendi verimizi döndürüyoruz.
-        Patcher.after(PresenceStore, "getClientStatus", (_self, args, res) => {
+        // Icon elementi oluştur
+        const buildIconRow = (sessions: { client: string; status: string }[]) => {
+            const icons = sessions.map(({ client, status }, i) => {
+                const id = (assetIds as any)[client];
+                if (!id) return null;
+                return React.createElement(Image, {
+                    key: `pi_${client}_${i}`,
+                    source: id,
+                    style: {
+                        width: 14,
+                        height: 14,
+                        marginLeft: 3,
+                        tintColor: statusColors[status] ?? statusColors.online,
+                    }
+                });
+            }).filter(Boolean);
+
+            if (!icons.length) return null;
+
+            return React.createElement(View, {
+                key: "pi_icon_row",
+                style: { flexDirection: "row", alignItems: "center" }
+            }, ...icons);
+        };
+
+        // phone-plugin taktiği: prototype.render yamala
+        Patcher.after(TO.prototype, "render", function(_self, _args, res) {
             try {
-                const userId: string = args[0];
+                // Sadece bir user prop'u içeriyorsa ve o user biz isek işlem yap
+                const props = res?.props ?? {};
+                const user = props?.user
+                    ?? props?.member?.user
+                    ?? props?.profile?.user
+                    ?? null;
+
                 const currentUser = UserStore.getCurrentUser?.();
-                if (!userId || !currentUser || userId !== currentUser.id) return res;
+                if (!user || !currentUser || user.id !== currentUser.id) return res;
 
-                const myStatus = buildClientStatus();
-                if (!myStatus) return res;
+                const sessions = getActiveSessions();
+                if (!sessions.length) return res;
 
-                // Eğer zaten veri varsa üstüne yaz, yoksa bizim verimizi döndür
-                if (res && typeof res === "object") {
-                    return { ...res, ...myStatus };
+                const iconRow = buildIconRow(sessions);
+                if (!iconRow) return res;
+
+                // Mevcut children'a ikonları ekle
+                const children = props.children;
+                if (Array.isArray(children)) {
+                    // Daha önce ekledik mi kontrol et
+                    if (children.some((c: any) => c?.key === "pi_icon_row")) return res;
+                    props.children = [...children, iconRow];
+                } else if (children) {
+                    if (children?.key === "pi_icon_row") return res;
+                    props.children = [children, iconRow];
                 }
-                return myStatus;
-            } catch { return res; }
-        });
-
-        // getStatus'u da yakala (genel online/offline durumu için)
-        Patcher.after(PresenceStore, "getStatus", (_self, args, res) => {
-            try {
-                const userId: string = args[0];
-                const currentUser = UserStore.getCurrentUser?.();
-                if (!userId || !currentUser || userId !== currentUser.id) return res;
-
-                // Eğer halihazırda bir status dönüyorsa dokunma
-                if (res && res !== "offline" && res !== "invisible") return res;
-
-                // Yoksa sessionlardan bul
-                const sessions = SessionStore.getSessions() || {};
-                const vals = Object.values(sessions) as any[];
-                if (vals.length > 0 && vals[0]?.status) return vals[0].status;
-            } catch {}
+            } catch { /* sessizce devam et */ }
             return res;
         });
 
