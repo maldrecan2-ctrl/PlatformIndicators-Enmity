@@ -9,17 +9,17 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // ÇÖKME SEBEBİ BULUNDU: Veritabanlarını bulmak için yazdığım "tüm modülleri tara" (getModules) kodu,
-      // saniyede binlerce kez tetiklenen FluxDispatcher (Veri Akışı) içine girince telefonun işlemcisini
-      // veya belleğini kilitleyip uygulamanın çökmesine (Freeze/Crash) sebep oluyormuş!
-      // Bu yüzden o tehlikeli tarama kodunu tamamen sildim. Çok daha güvenli ve hafif olan standart bulucuya döndüm.
+      // ÇÖKME (CRASH) SEBEBİNİN KESİN TEŞHİSİ:
+      // Son sürümde "Nesneler donuktur (frozen)" diye korkup, gelen mesaj nesnelerini tamamen kopyalayıp
+      // sahte (Object.assign) nesnelerle değiştirmiştim. Discord'un altyapısı bu sahte nesneleri görünce
+      // "Bu orijinal mesaj objesi değil!" diyerek tüm uygulamayı çökertmiş.
+      // Halbuki ilk testteki gibi nesneleri değiştirmeden direkt içindeki yazıya ekleme yaparsak ASLA ÇÖKMÜYOR!
 
       let PresenceStore: any = null;
       let SessionStore: any = null;
       let UserStore: any = null;
 
       const getPlatformString = (userId: string) => {
-          // Eğer önceden bulduysak tekrar tekrar Discord'u yormamak için hafızadan kullanıyoruz (ÇÖKMEYİ ENGELLER)
           if (!PresenceStore) PresenceStore = getByProps("getState", "getPresence") || getByProps("clientStatuses");
           if (!UserStore) UserStore = getByProps("getUser", "getCurrentUser");
           if (!SessionStore) SessionStore = getByProps("getSessions");
@@ -76,36 +76,34 @@ const PlatformIndicators: Plugin = {
                               const author = event.message.author;
                               const currentGlobalName = author.global_name || author.username;
                               
+                              // Asla objeyi klonlama! Sadece yazıyı (string) direkt güncelle. 
+                              // Eğer obje donuksa try/catch sayesinde sessizce iptal olur, uygulama ÇÖKMEZ!
                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                  // Nesnelerin donmuş (frozen) olma ihtimaline karşı tamamen kopyalıyoruz
-                                  event.message = Object.assign({}, event.message, {
-                                      author: Object.assign({}, author, {
-                                          global_name: currentGlobalName + iconsStr,
-                                          username: author.username + iconsStr
-                                      })
-                                  });
+                                  if (author.global_name) {
+                                      author.global_name += iconsStr;
+                                  } else {
+                                      author.username += iconsStr;
+                                  }
                               }
                           }
                       }
                   } 
                   else if (event.type === "LOAD_MESSAGES_SUCCESS") {
                       if (Array.isArray(event.messages)) {
-                          event.messages = event.messages.map((m: any) => {
+                          event.messages.forEach((m: any) => {
                               if (m && m.author) {
                                   const iconsStr = getPlatformString(m.author.id);
                                   if (iconsStr && iconsStr !== "") {
                                       const currentGlobalName = m.author.global_name || m.author.username;
                                       if (!currentGlobalName.includes(iconsStr.trim())) {
-                                          return Object.assign({}, m, {
-                                              author: Object.assign({}, m.author, {
-                                                  global_name: currentGlobalName + iconsStr,
-                                                  username: m.author.username + iconsStr
-                                              })
-                                          });
+                                          if (m.author.global_name) {
+                                              m.author.global_name += iconsStr;
+                                          } else {
+                                              m.author.username += iconsStr;
+                                          }
                                       }
                                   }
                               }
-                              return m;
                           });
                       }
                   }
@@ -113,22 +111,18 @@ const PlatformIndicators: Plugin = {
                       if (Array.isArray(event.groups)) {
                           event.groups.forEach((group: any) => {
                               if (Array.isArray(group.items)) {
-                                  group.items.forEach((item: any, index: number) => {
+                                  group.items.forEach((item: any) => {
                                       if (item.member && item.member.user) {
                                           const iconsStr = getPlatformString(item.member.user.id);
                                           if (iconsStr && iconsStr !== "") {
                                               const user = item.member.user;
                                               const currentGlobalName = user.global_name || user.username;
                                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                                  // Orijinal item bozulmasın diye kopyalıyoruz
-                                                  group.items[index] = Object.assign({}, item, {
-                                                      member: Object.assign({}, item.member, {
-                                                          user: Object.assign({}, user, {
-                                                              global_name: currentGlobalName + iconsStr,
-                                                              username: user.username + iconsStr
-                                                          })
-                                                      })
-                                                  });
+                                                  if (user.global_name) {
+                                                      user.global_name += iconsStr;
+                                                  } else {
+                                                      user.username += iconsStr;
+                                                  }
                                               }
                                           }
                                       }
