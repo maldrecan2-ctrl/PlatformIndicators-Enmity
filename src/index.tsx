@@ -1,60 +1,20 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
 import { getByProps } from 'enmity/metro';
-import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
 import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
-const { View, Text } = getByProps("View", "Text") || {};
 
 const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      const getModules = () => {
-          try {
-              return (window as any).enmity?.metro?.getModules?.() || [];
-          } catch(e) {
-              return [];
-          }
-      };
+      // PROXY TAKTİĞİ: Arayüz (UI) yamaları Discord 261.0 sürümünde tamamen değiştiği ve bozuk olduğu için
+      // doğrudan Discord'un veritabanlarından çıkan nesnelere (örneğin Kullanıcı Nesnesi) bir ajan (Proxy) takıyoruz.
+      // Bu ajan, Discord "Bu kullanıcının ismi ne?" diye sorduğu anda araya girip ismin sonuna emojiyi ekliyor.
+      // Obje donmuş (frozen) olsa bile Proxy ile bu engeli %100 aşıyoruz!
 
-      const findByName = (name: string) => {
-          for (const m of getModules()) {
-              if (m && m.default && m.default.name === name) return m;
-              if (m && m.name === name) return m;
-              if (m && m.default && m.default.displayName === name) return m;
-              if (m && m.displayName === name) return m;
-          }
-          return null;
-      };
-
-      const findByTypeNameAll = (name: string) => {
-          const results = [];
-          for (const m of getModules()) {
-              if (m && m.default && m.default.type && m.default.type.name === name) results.push(m.default);
-              else if (m && m.type && m.type.name === name) results.push(m);
-          }
-          return results;
-      };
-
-      const findInReactTree = (tree: any, filter: (node: any) => boolean): any => {
-          if (!tree) return null;
-          if (filter(tree)) return tree;
-          if (Array.isArray(tree)) {
-              for (const child of tree) {
-                  const found = findInReactTree(child, filter);
-                  if (found) return found;
-              }
-          } else if (tree.props && tree.props.children) {
-              return findInReactTree(tree.props.children, filter);
-          }
-          return null;
-      };
-
-      // GECİKMELİ (LAZY) YÜKLEME - HATA BURADAYDI! 
-      // Uygulama açılırken anında arayınca bulamıyordu. O yüzden fonksiyon içine aldık.
-      const getStore = (name: string) => {
+      const getByStoreName = (name: string) => {
           try {
               const modules = (window as any).enmity?.metro?.getModules?.() || [];
               for (const m of modules) {
@@ -65,10 +25,14 @@ const PlatformIndicators: Plugin = {
           return null;
       };
 
+      let PresenceStore: any = null;
+      let SessionStore: any = null;
+      let UserStore: any = null;
+
       const getPlatformString = (userId: string) => {
-          const PresenceStore = getStore("PresenceStore") || getByProps("getState", "getPresence");
-          const UserStore = getStore("UserStore") || getByProps("getCurrentUser");
-          const SessionStore = getStore("SessionsStore") || getByProps("getSessions");
+          if (!PresenceStore) PresenceStore = getByStoreName("PresenceStore");
+          if (!UserStore) UserStore = getByStoreName("UserStore");
+          if (!SessionStore) SessionStore = getByStoreName("SessionsStore");
 
           if (!PresenceStore || !UserStore) return null;
           
@@ -102,105 +66,125 @@ const PlatformIndicators: Plugin = {
           
           if (icons.length === 0) return null;
 
-          return " " + icons.join(" ");
+          return " " + icons.join("");
       };
 
-      const StatusModule = findByName("Status");
-      if (StatusModule) {
-          Patcher.before(StatusModule, "default", (self, args) => {
-              if (args && args[0]) {
-                  args[0].isMobileOnline = false;
-              }
-          });
-      }
+      const proxiedUsers = new WeakMap();
 
-      const DisplayNameModule = findByName("DisplayName");
-      if (DisplayNameModule) {
-          Patcher.after(DisplayNameModule, "default", (self, args, res) => {
-              try {
-                  const user = args[0]?.user;
-                  if (user && user.id) {
-                      const icons = getPlatformString(user.id);
-                      if (icons) {
-                          // Daha güvenli yerleştirme
-                          if (res && res.props) {
-                              res.props.children = (
-                                  <View style={{ flexDirection: "row", alignItems: "center" }}>
-                                      {res.props.children}
-                                      <Text style={{ fontSize: 13, marginLeft: 2 }}>{icons}</Text>
-                                  </View>
-                              );
+      const createUserProxy = (userObj: any) => {
+          if (!userObj || typeof userObj !== "object") return userObj;
+          if (proxiedUsers.has(userObj)) return proxiedUsers.get(userObj);
+
+          const proxy = new Proxy(userObj, {
+              get(target, prop) {
+                  const val = target[prop];
+                  // Eğer Discord kullanıcının ismini (username veya globalName) ekrana çizmek için okuyorsa:
+                  if (prop === "username" || prop === "globalName") {
+                      if (typeof val === "string") {
+                          const icons = getPlatformString(target.id);
+                          if (icons && !val.includes(icons.trim())) {
+                              return val + icons;
                           }
                       }
                   }
-              } catch(e) {}
-              return res;
+                  return val;
+              }
           });
-      }
 
-      const GuildMemberRowModule = getByProps("GuildMemberRow");
-      if (GuildMemberRowModule && GuildMemberRowModule.GuildMemberRow) {
-          if (typeof GuildMemberRowModule.GuildMemberRow === "object" && GuildMemberRowModule.GuildMemberRow.type) {
-              Patcher.after(GuildMemberRowModule.GuildMemberRow, "type", (self, args, res) => {
-                  try {
-                      const user = args[0]?.user;
-                      if (!user) return res;
-                      const icons = getPlatformString(user.id);
-                      if (!icons) return res;
+          proxiedUsers.set(userObj, proxy);
+          return proxy;
+      };
 
-                      if (findInReactTree(res, n => n.key === "GuildMemberRowStatusIconsView")) return res;
+      const proxiedMembers = new WeakMap();
 
-                      const targetView = findInReactTree(res, n => n?.props?.style?.flexDirection === "row");
-                      if (targetView && Array.isArray(targetView.props.children)) {
-                          targetView.props.children.splice(2, 0, (
-                              <View key="GuildMemberRowStatusIconsView" style={{ flexDirection: "row", alignItems: "center" }}>
-                                  <Text style={{ fontSize: 13 }}>{icons}</Text>
-                              </View>
-                          ));
-                      } else if (res && res.props) {
-                          // Güvenli yedek yama
-                          res.props.children = (
-                              <View style={{ flex: 1, flexDirection: "row", alignItems: "center" }}>
-                                  <View style={{ flex: 1 }}>{res.props.children}</View>
-                                  <Text style={{ fontSize: 13 }}>{icons}</Text>
-                              </View>
-                          );
+      const createMemberProxy = (memberObj: any) => {
+          if (!memberObj || typeof memberObj !== "object") return memberObj;
+          if (proxiedMembers.has(memberObj)) return proxiedMembers.get(memberObj);
+
+          const proxy = new Proxy(memberObj, {
+              get(target, prop) {
+                  const val = target[prop];
+                  // Üye listelerinde isim genellikle 'nick' veya member.user.username üzerinden okunur
+                  if (prop === "nick") {
+                      if (typeof val === "string") {
+                          const userId = target.userId;
+                          const icons = getPlatformString(userId);
+                          if (icons && !val.includes(icons.trim())) {
+                              return val + icons;
+                          }
+                      } else if (!val) {
+                          // Eğer sunucu takma adı (nick) yoksa sadece ikon döndürebiliriz ki ismin yanına yapışsın
+                          // Ama genelde nick yoksa user objesinden ismi çeker, o yüzden dokunmamak daha iyi olabilir.
+                          // Yine de güvenli olsun diye:
+                          const userId = target.userId;
+                          const icons = getPlatformString(userId);
+                          if (icons) return icons;
                       }
-                  } catch(e) {}
+                  } else if (prop === "user") {
+                      return createUserProxy(val);
+                  }
+                  return val;
+              }
+          });
+
+          proxiedMembers.set(memberObj, proxy);
+          return proxy;
+      };
+
+      const patchStores = () => {
+          const userStoreObj = getByStoreName("UserStore");
+          if (userStoreObj) {
+              Patcher.after(userStoreObj, "getUser", (self, args, res) => {
+                  return createUserProxy(res);
+              });
+              
+              Patcher.after(userStoreObj, "getCurrentUser", (self, args, res) => {
+                  return createUserProxy(res);
+              });
+
+              if (userStoreObj.getUsers) {
+                  Patcher.after(userStoreObj, "getUsers", (self, args, res) => {
+                      if (res && typeof res === "object") {
+                          const newRes: any = {};
+                          for (const key in res) {
+                              newRes[key] = createUserProxy(res[key]);
+                          }
+                          return newRes;
+                      }
+                      return res;
+                  });
+              }
+          }
+
+          const guildMemberStoreObj = getByStoreName("GuildMemberStore");
+          if (guildMemberStoreObj) {
+              Patcher.after(guildMemberStoreObj, "getMember", (self, args, res) => {
+                  return createMemberProxy(res);
+              });
+          }
+
+          // Mesajların içinde de yazar nesnesi bulunur, orayı da garantiye alalım
+          const messageStoreObj = getByStoreName("MessageStore");
+          if (messageStoreObj) {
+              Patcher.after(messageStoreObj, "getMessage", (self, args, res) => {
+                  if (res && res.author) {
+                      res.author = createUserProxy(res.author);
+                  }
+                  return res;
+              });
+              Patcher.after(messageStoreObj, "getMessages", (self, args, res) => {
+                  if (res && res._array) {
+                      res._array.forEach((m: any) => {
+                          if (m && m.author) m.author = createUserProxy(m.author);
+                      });
+                  }
                   return res;
               });
           }
-      }
+      };
 
-      const userRows = findByTypeNameAll("UserRow");
-      userRows.forEach(UserRowComp => {
-          if (typeof UserRowComp === "object" && UserRowComp.type) {
-              Patcher.after(UserRowComp, "type", (self, args, res) => {
-                  try {
-                      const user = args[0]?.user;
-                      if (!user) return res;
-                      const icons = getPlatformString(user.id);
-                      if (!icons) return res;
-
-                      if (findInReactTree(res, n => n.key === "TabsV2MemberListStatusIconsView")) return res;
-
-                      if (res && res.props && res.props.label) {
-                          const oldLabel = res.props.label;
-                          res.props.label = (
-                              <View style={{ flex: 1, justifyContent: "space-between", flexDirection: "row", alignItems: "center" }} key="TabsV2MemberListStatusIconsView">
-                                  {oldLabel}
-                                  <View key="TabsV2MemberListStatusIconsInner" style={{ flexDirection: "row", marginLeft: 4, alignItems: "center" }}>
-                                      <Text style={{ fontSize: 13 }}>{icons}</Text>
-                                  </View>
-                              </View>
-                          );
-                      }
-                  } catch(e) {}
-                  return res;
-              });
-          }
-      });
-
+      // Gecikmeli yükleme
+      setTimeout(patchStores, 2000);
    },
 
    onStop() {
