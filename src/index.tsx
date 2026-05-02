@@ -1,5 +1,5 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
-import { getByProps, getModules } from 'enmity/metro';
+import { getByProps } from 'enmity/metro';
 import { create } from 'enmity/patcher';
 import manifest from '../manifest.json';
 
@@ -9,38 +9,26 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // HARİKA HABER! Demek ki Enmity çalışıyor ve sabahtan beri FluxDispatcher (Veri Yaması) başkalarının
-      // mesajlarında kusursuzca işliyormuş! Kendi mesajlarında çıkmamasının sebebi, sen mesajı gönderdiğinde
-      // Discord'un bunu sunucudan beklemeden direkt ekrana basması.
-      // Şimdi bu yamanın en stabil ve kusursuz versiyonunu (ve senin kendi mesajlarını da anında algılayan
-      // sürümünü) yazıyoruz. (Şimdilik çökmeye sebep olmaması için standart Emojilerle (💻,📱) çalışacak).
-
-      const findStore = (name: string) => {
-          try {
-              const modules = getModules() || [];
-              for (const m of modules) {
-                  if (m && m.default && typeof m.default.getName === "function" && m.default.getName() === name) return m.default;
-                  if (m && typeof m.getName === "function" && m.getName() === name) return m;
-              }
-          } catch(e) {}
-          return null;
-      };
+      // ÇÖKME SEBEBİ BULUNDU: Veritabanlarını bulmak için yazdığım "tüm modülleri tara" (getModules) kodu,
+      // saniyede binlerce kez tetiklenen FluxDispatcher (Veri Akışı) içine girince telefonun işlemcisini
+      // veya belleğini kilitleyip uygulamanın çökmesine (Freeze/Crash) sebep oluyormuş!
+      // Bu yüzden o tehlikeli tarama kodunu tamamen sildim. Çok daha güvenli ve hafif olan standart bulucuya döndüm.
 
       let PresenceStore: any = null;
       let SessionStore: any = null;
       let UserStore: any = null;
 
       const getPlatformString = (userId: string) => {
-          if (!PresenceStore) PresenceStore = findStore("PresenceStore") || getByProps("getState", "getPresence", "getActivities");
-          if (!UserStore) UserStore = findStore("UserStore") || getByProps("getUser", "getCurrentUser");
-          if (!SessionStore) SessionStore = findStore("SessionsStore") || getByProps("getSessions");
+          // Eğer önceden bulduysak tekrar tekrar Discord'u yormamak için hafızadan kullanıyoruz (ÇÖKMEYİ ENGELLER)
+          if (!PresenceStore) PresenceStore = getByProps("getState", "getPresence") || getByProps("clientStatuses");
+          if (!UserStore) UserStore = getByProps("getUser", "getCurrentUser");
+          if (!SessionStore) SessionStore = getByProps("getSessions");
 
           if (!PresenceStore || !UserStore) return "";
           
           let statuses;
           try {
               const currentUser = UserStore.getCurrentUser();
-              // Eğer bakan kişi kullanıcının kendisiyse, SessionStore'dan kendi aktif cihazını bulur.
               if (currentUser && userId === currentUser.id && SessionStore) {
                   const sessions = SessionStore.getSessions() || {};
                   statuses = {};
@@ -73,7 +61,7 @@ const PlatformIndicators: Plugin = {
           return " " + icons.join("");
       };
 
-      const Dispatcher = getByProps('dispatch', 'subscribe') || findStore("Dispatcher");
+      const Dispatcher = getByProps('dispatch', 'subscribe');
       
       if (Dispatcher) {
           Patcher.before(Dispatcher, 'dispatch', (self, args) => {
@@ -81,7 +69,6 @@ const PlatformIndicators: Plugin = {
                   const event = args[0];
                   if (!event) return;
 
-                  // MESSAGE_CREATE başkalarının mesajları, MESSAGE_SEND ise senin gönderdiğin anlık mesajlar!
                   if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE" || event.type === "MESSAGE_SEND") {
                       if (event.message && event.message.author) {
                           const iconsStr = getPlatformString(event.message.author.id);
@@ -90,14 +77,13 @@ const PlatformIndicators: Plugin = {
                               const currentGlobalName = author.global_name || author.username;
                               
                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                  event.message = {
-                                      ...event.message,
-                                      author: {
-                                          ...author,
+                                  // Nesnelerin donmuş (frozen) olma ihtimaline karşı tamamen kopyalıyoruz
+                                  event.message = Object.assign({}, event.message, {
+                                      author: Object.assign({}, author, {
                                           global_name: currentGlobalName + iconsStr,
                                           username: author.username + iconsStr
-                                      }
-                                  };
+                                      })
+                                  });
                               }
                           }
                       }
@@ -110,14 +96,12 @@ const PlatformIndicators: Plugin = {
                                   if (iconsStr && iconsStr !== "") {
                                       const currentGlobalName = m.author.global_name || m.author.username;
                                       if (!currentGlobalName.includes(iconsStr.trim())) {
-                                          return {
-                                              ...m,
-                                              author: {
-                                                  ...m.author,
+                                          return Object.assign({}, m, {
+                                              author: Object.assign({}, m.author, {
                                                   global_name: currentGlobalName + iconsStr,
                                                   username: m.author.username + iconsStr
-                                              }
-                                          };
+                                              })
+                                          });
                                       }
                                   }
                               }
@@ -125,26 +109,26 @@ const PlatformIndicators: Plugin = {
                           });
                       }
                   }
-                  // Sunucu Üye Listesi için yama
                   else if (event.type === "GUILD_MEMBER_LIST_UPDATE") {
                       if (Array.isArray(event.groups)) {
                           event.groups.forEach((group: any) => {
                               if (Array.isArray(group.items)) {
-                                  group.items.forEach((item: any) => {
+                                  group.items.forEach((item: any, index: number) => {
                                       if (item.member && item.member.user) {
                                           const iconsStr = getPlatformString(item.member.user.id);
                                           if (iconsStr && iconsStr !== "") {
                                               const user = item.member.user;
                                               const currentGlobalName = user.global_name || user.username;
                                               if (!currentGlobalName.includes(iconsStr.trim())) {
-                                                  item.member = {
-                                                      ...item.member,
-                                                      user: {
-                                                          ...user,
-                                                          global_name: currentGlobalName + iconsStr,
-                                                          username: user.username + iconsStr
-                                                      }
-                                                  };
+                                                  // Orijinal item bozulmasın diye kopyalıyoruz
+                                                  group.items[index] = Object.assign({}, item, {
+                                                      member: Object.assign({}, item.member, {
+                                                          user: Object.assign({}, user, {
+                                                              global_name: currentGlobalName + iconsStr,
+                                                              username: user.username + iconsStr
+                                                          })
+                                                      })
+                                                  });
                                               }
                                           }
                                       }
