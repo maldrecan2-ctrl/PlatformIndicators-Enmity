@@ -1,41 +1,65 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
 import { getByProps } from 'enmity/metro';
+import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
 import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
+const { View, Text } = getByProps("View", "Text") || {};
 
 const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // Discord'un tüm Veritabanlarını (Store) kesin olarak bulmamızı sağlayan özel tarayıcı.
-      // Discord'da her Store'un bir .getName() fonksiyonu vardır!
-      const getByStoreName = (name: string) => {
+      // 1. Gerekli Enmity Yardımcıları
+      const getModules = () => {
           try {
-              const modules = (window as any).enmity?.metro?.getModules?.() || [];
-              for (const m of modules) {
-                  if (m && m.default && typeof m.default.getName === "function" && m.default.getName() === name) {
-                      return m.default;
-                  }
-                  if (m && typeof m.getName === "function" && m.getName() === name) {
-                      return m;
-                  }
-              }
-          } catch(e) {}
+              return (window as any).enmity?.metro?.getModules?.() || [];
+          } catch(e) {
+              return [];
+          }
+      };
+
+      const findByName = (name: string) => {
+          for (const m of getModules()) {
+              if (m && m.default && m.default.name === name) return m;
+              if (m && m.name === name) return m;
+              if (m && m.default && m.default.displayName === name) return m;
+              if (m && m.displayName === name) return m;
+          }
           return null;
       };
 
-      let PresenceStore: any = null;
-      let SessionStore: any = null;
-      let UserStore: any = null;
+      const findByTypeNameAll = (name: string) => {
+          const results = [];
+          for (const m of getModules()) {
+              if (m && m.default && m.default.type && m.default.type.name === name) results.push(m.default);
+              else if (m && m.type && m.type.name === name) results.push(m);
+          }
+          return results;
+      };
+
+      const findInReactTree = (tree: any, filter: (node: any) => boolean): any => {
+          if (!tree) return null;
+          if (filter(tree)) return tree;
+          if (Array.isArray(tree)) {
+              for (const child of tree) {
+                  const found = findInReactTree(child, filter);
+                  if (found) return found;
+              }
+          } else if (tree.props && tree.props.children) {
+              return findInReactTree(tree.props.children, filter);
+          }
+          return null;
+      };
+
+      // 2. Veritabanlarını Bulma
+      const PresenceStore = getByProps("getState", "getPresence") || ((window as any).enmity?.metro?.getByStoreName?.("PresenceStore"));
+      const UserStore = getByProps("getCurrentUser") || ((window as any).enmity?.metro?.getByStoreName?.("UserStore"));
+      const SessionStore = getByProps("getSessions") || ((window as any).enmity?.metro?.getByStoreName?.("SessionsStore"));
 
       const getPlatformString = (userId: string) => {
-          if (!PresenceStore) PresenceStore = getByStoreName("PresenceStore");
-          if (!UserStore) UserStore = getByStoreName("UserStore");
-          if (!SessionStore) SessionStore = getByStoreName("SessionsStore");
-
-          if (!PresenceStore || !UserStore) return " [❓]";
+          if (!PresenceStore || !UserStore) return null;
           
           let statuses;
           try {
@@ -49,19 +73,14 @@ const PlatformIndicators: Plugin = {
                       }
                   });
               } else {
-                  const state = PresenceStore.getState();
-                  if (state && state.clientStatuses) {
-                      statuses = state.clientStatuses[userId];
-                  }
+                  statuses = PresenceStore.getState()?.clientStatuses?.[userId];
               }
-          } catch(e) {
-              return " [⚠️]"; 
-          }
+          } catch(e) {}
           
-          if (!statuses) return ""; 
+          if (!statuses) return null; 
           
           const platforms = Object.keys(statuses);
-          if (platforms.length === 0) return "";
+          if (platforms.length === 0) return null;
           
           let icons = [];
           if (platforms.includes("desktop")) icons.push("💻");
@@ -70,83 +89,120 @@ const PlatformIndicators: Plugin = {
           if (platforms.includes("embedded")) icons.push("🎮");
           if (platforms.includes("vr")) icons.push("🥽");
           
-          if (icons.length === 0) return "";
+          if (icons.length === 0) return null;
 
-          return " " + icons.join("");
+          return " " + icons.join(" ");
       };
 
-      // KESİN VE KALICI VERİ YAMASI:
-      // Kullanıcı veritabanından (UserStore) biri her çağrıldığında anında araya girip ismini değiştiriyoruz.
-      // Böylece ekranlar değişse bile veritabanından veri her çekildiğinde isimler ikonlu gelecek.
+      // 3. VENDETTA BİREBİR KOPYALANMIŞ UI YAMALARI
       
-      const patchUserStore = () => {
-          const store = getByStoreName("UserStore");
-          if (!store) return;
-          
-          Patcher.after(store, "getUser", (self, args, res) => {
-              if (!res || res.__platformPatched) return res;
-              
-              const iconsStr = getPlatformString(res.id);
-              if (iconsStr && iconsStr !== "") {
-                  // Orijinal objeyi bozmamak ve React donmalarını (frozen object) aşmak için 
-                  // objenin tam bir klonunu oluşturup onun üzerinde değişiklik yapıyoruz.
-                  const clonedUser = Object.create(Object.getPrototypeOf(res));
-                  Object.assign(clonedUser, res);
-                  
-                  const currentGlobalName = clonedUser.globalName || clonedUser.username;
-                  if (!currentGlobalName.includes(iconsStr.trim())) {
-                      clonedUser.username = clonedUser.username + iconsStr;
-                      if (clonedUser.globalName) clonedUser.globalName = clonedUser.globalName + iconsStr;
-                      clonedUser.__platformPatched = true; // Sonsuz döngüyü engelle
-                      return clonedUser;
-                  }
+      // Orijinal mobil telefon ikonunu gizle (zaten biz emoji ekleyeceğiz)
+      const StatusModule = findByName("Status");
+      if (StatusModule) {
+          Patcher.before(StatusModule, "default", (self, args) => {
+              if (args && args[0]) {
+                  args[0].isMobileOnline = false;
               }
-              return res;
           });
-      };
+      }
 
-      // Aynı işlemi sunucu üye listesi (GuildMemberStore) için de yapıyoruz.
-      const patchGuildMemberStore = () => {
-          const store = getByStoreName("GuildMemberStore");
-          if (!store) return;
-          
-          Patcher.after(store, "getMember", (self, args, res) => {
-              if (!res || res.__platformPatched) return res;
-              
-              // getMember'ın 2. argümanı userId'dir (0. argüman guildId)
-              const userId = args[1] || res.userId;
-              if (!userId) return res;
-
-              const iconsStr = getPlatformString(userId);
-              if (iconsStr && iconsStr !== "") {
-                  const clonedMember = Object.create(Object.getPrototypeOf(res));
-                  Object.assign(clonedMember, res);
-                  
-                  const currentNick = clonedMember.nick;
-                  if (currentNick) {
-                      if (!currentNick.includes(iconsStr.trim())) {
-                          clonedMember.nick = currentNick + iconsStr;
-                          clonedMember.__platformPatched = true;
-                          return clonedMember;
+      // 1. Profil Sayfası: DisplayName
+      const DisplayNameModule = findByName("DisplayName");
+      if (DisplayNameModule) {
+          Patcher.after(DisplayNameModule, "default", (self, args, res) => {
+              try {
+                  const user = args[0]?.user;
+                  if (user && user.id) {
+                      const icons = getPlatformString(user.id);
+                      if (icons) {
+                          const targetArray = res.props?.children?.props?.children?.[0]?.props?.children;
+                          if (Array.isArray(targetArray)) {
+                              targetArray.push(<Text key="platform-icons">{icons}</Text>);
+                          }
                       }
-                  } else {
-                      clonedMember.nick = iconsStr;
-                      clonedMember.__platformPatched = true;
-                      return clonedMember;
                   }
-              }
+              } catch(e) {}
               return res;
           });
-      };
+      }
 
-      // FluxDispatcher yamasını çöpe atıyoruz, çünkü menü geçişlerinde veri yenilenmezse ikonlar gidiyor.
-      // Sadece ana veritabanlarını (Store) yamalamak en kalıcı çözümdür.
-      
-      // Biraz gecikmeli olarak yamaları uygula ki Discord Store'ları belleğe tamamen yüklemiş olsun
-      setTimeout(() => {
-          patchUserStore();
-          patchGuildMemberStore();
-      }, 3000);
+      // DefaultName Alternatifi
+      const DefaultNameModule = findByName("DefaultName");
+      if (DefaultNameModule) {
+          Patcher.after(DefaultNameModule, "default", (self, args, res) => {
+              try {
+                  const user = args[0]?.user;
+                  if (user && user.id) {
+                      const icons = getPlatformString(user.id);
+                      if (icons) {
+                          const targetArray = res.props?.children?.[0]?.props?.children;
+                          if (Array.isArray(targetArray)) {
+                              targetArray.push(<Text key="platform-icons">{icons}</Text>);
+                          }
+                      }
+                  }
+              } catch(e) {}
+              return res;
+          });
+      }
+
+      // 2. Üye Listesi: GuildMemberRow (Eski Sürüm / Standart Sunucu Listesi)
+      const GuildMemberRowModule = getByProps("GuildMemberRow");
+      if (GuildMemberRowModule && GuildMemberRowModule.GuildMemberRow) {
+          // React.memo olduğu için 'type' yamalanmalı
+          if (typeof GuildMemberRowModule.GuildMemberRow === "object" && GuildMemberRowModule.GuildMemberRow.type) {
+              Patcher.after(GuildMemberRowModule.GuildMemberRow, "type", (self, args, res) => {
+                  try {
+                      const user = args[0]?.user;
+                      if (!user) return res;
+                      const icons = getPlatformString(user.id);
+                      if (!icons) return res;
+
+                      if (findInReactTree(res, n => n.key === "GuildMemberRowStatusIconsView")) return res;
+
+                      const targetView = findInReactTree(res, n => n?.props?.style?.flexDirection === "row");
+                      if (targetView && Array.isArray(targetView.props.children)) {
+                          targetView.props.children.splice(2, 0, (
+                              <View key="GuildMemberRowStatusIconsView" style={{ flexDirection: "row" }}>
+                                  <Text>{icons}</Text>
+                              </View>
+                          ));
+                      }
+                  } catch(e) {}
+                  return res;
+              });
+          }
+      }
+
+      // 3. Üye Listesi ve DM Listesi: UserRow (Yeni Sürüm / Tabs V2 / DM'ler)
+      const userRows = findByTypeNameAll("UserRow");
+      userRows.forEach(UserRowComp => {
+          if (typeof UserRowComp === "object" && UserRowComp.type) {
+              Patcher.after(UserRowComp, "type", (self, args, res) => {
+                  try {
+                      const user = args[0]?.user;
+                      if (!user) return res;
+                      const icons = getPlatformString(user.id);
+                      if (!icons) return res;
+
+                      if (findInReactTree(res, n => n.key === "TabsV2MemberListStatusIconsView")) return res;
+
+                      if (res && res.props && res.props.label) {
+                          const oldLabel = res.props.label;
+                          res.props.label = (
+                              <View style={{ flex: 1, justifyContent: "flex-start", flexDirection: "row" }} key="TabsV2MemberListStatusIconsView">
+                                  {oldLabel}
+                                  <View key="TabsV2MemberListStatusIconsInner" style={{ flexDirection: "row", marginLeft: 4, alignItems: "center" }}>
+                                      <Text style={{ fontSize: 13 }}>{icons}</Text>
+                                  </View>
+                              </View>
+                          );
+                      }
+                  } catch(e) {}
+                  return res;
+              });
+          }
+      });
 
    },
 
