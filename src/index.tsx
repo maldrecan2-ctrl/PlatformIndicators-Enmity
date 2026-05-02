@@ -1,8 +1,6 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
 import { getByProps } from 'enmity/metro';
-import { Toasts } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
-import { find } from 'enmity/api/assets';
 import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
@@ -11,78 +9,74 @@ const PlatformIndicators: Plugin = {
     ...manifest,
 
     onStart() {
-        // TEST MODU: Discord'un içindeki tüm asset isimlerinden platform ile ilgili olanları bul
-        // ve ekrana TOAST bildirimi olarak göster. 
-        // Bu sayede doğru isimleri öğreneceğiz!
-        try {
-            const keywords = ["phone", "mobile", "desktop", "monitor", "globe", "web", "controller", "console", "vr", "headset", "platform", "device"];
-            const found: Record<string, string[]> = {};
-            
-            for (const kw of keywords) {
-                try {
-                    const results: string[] = [];
-                    // find() ile tüm assetleri tara
-                    let asset = find((a: any) => a?.name?.toLowerCase()?.includes(kw));
-                    if (asset?.name) results.push(asset.name);
-                    if (results.length > 0) found[kw] = results;
-                } catch {}
-            }
-            
-            const foundStr = Object.entries(found)
-                .map(([k, v]) => `${k}: ${v.join(", ")}`)
-                .join(" | ");
-            
-            if (foundStr) {
-                // İlk 100 karakter (Toast sınırlı)
-                Toasts.open({ content: "PI Assets: " + foundStr.slice(0, 120) });
-            } else {
-                Toasts.open({ content: "PI: Hiç asset bulunamadı!" });
-            }
-        } catch(e) {
-            Toasts.open({ content: "PI Test Hatası: " + String(e).slice(0, 80) });
-        }
+        // ŞEYTANI DEHA YAKLAŞIMI:
+        // Discord zaten diğer kullanıcılar için platform ikonlarını (📱 gibi) kendisi çiziyor.
+        // Bu çizimi tetikleyen fonksiyon: PresenceStore.getClientStatus(userId)
+        // Bu fonksiyon { mobile: "online", desktop: "dnd" } gibi bir obje döndürüyor.
+        // Discord bu objeyi alıp kendi orijinal ikonlarını çiziyor.
+        // BİZ SADECE KENDİ USER ID'MİZ İÇİN BU FONKSİYONA KENDİ OTURUM VERİMİZİ VERİYORUZ.
+        // Discord gerisini halleder. Crash yok, SVG yok, emoji yok. Tamamen orijinal ikonlar!
 
-        // Çalışan temel sürümü de aktif bırak
-        const SessionStore = getByProps("getSessions", "getSession");
-        const UserStore    = getByProps("getUser", "getCurrentUser");
-        if (!SessionStore || !UserStore) return;
+        const SessionStore  = getByProps("getSessions", "getSession");
+        const UserStore     = getByProps("getUser", "getCurrentUser");
+        const PresenceStore = getByProps("getClientStatus", "getStatus");
 
-        const buildStr = (): string => {
+        if (!SessionStore || !UserStore || !PresenceStore) return;
+
+        // Kendi aktif oturumlarımızı Discord'un beklediği formata çevir
+        // Format: { desktop: "online", mobile: "dnd" }
+        const buildClientStatus = (): Record<string, string> | null => {
             try {
-                const seen = new Set<string>();
-                let r = "";
-                for (const s of Object.values(SessionStore.getSessions() || {}) as any[]) {
-                    const c: string = s?.clientInfo?.client;
-                    if (c && !seen.has(c)) {
-                        seen.add(c);
-                        const m: Record<string, string> = {
-                            desktop:  " \u{1F5A5}",
-                            mobile:   " \u{1F4F1}",
-                            web:      " \u{1F310}",
-                            embedded: " \u{1F3AE}",
-                            vr:       " \u{1F97D}",
-                        };
-                        r += m[c] ?? "";
+                const sessions = SessionStore.getSessions() || {};
+                const clientStatus: Record<string, string> = {};
+                for (const s of Object.values(sessions) as any[]) {
+                    const client: string = s?.clientInfo?.client;
+                    const status: string = s?.status ?? "online";
+                    if (client) {
+                        clientStatus[client] = status;
                     }
                 }
-                return r;
-            } catch { return ""; }
+                return Object.keys(clientStatus).length > 0 ? clientStatus : null;
+            } catch { return null; }
         };
 
-        Patcher.after(UserStore, "getCurrentUser", (_s, _a, res) => {
+        // PresenceStore.getClientStatus'u yakala
+        // Discord her kullanıcı için bunu çağırır. Sadece kendi ID'miz için kendi verimizi döndürüyoruz.
+        Patcher.after(PresenceStore, "getClientStatus", (_self, args, res) => {
             try {
-                if (res?.username) {
-                    const icons = buildStr();
-                    if (icons && !res.username.includes(icons.trim())) {
-                        return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
-                            username:   res.username + icons,
-                            globalName: res.globalName ? res.globalName + icons : res.globalName,
-                        });
-                    }
+                const userId: string = args[0];
+                const currentUser = UserStore.getCurrentUser?.();
+                if (!userId || !currentUser || userId !== currentUser.id) return res;
+
+                const myStatus = buildClientStatus();
+                if (!myStatus) return res;
+
+                // Eğer zaten veri varsa üstüne yaz, yoksa bizim verimizi döndür
+                if (res && typeof res === "object") {
+                    return { ...res, ...myStatus };
                 }
+                return myStatus;
+            } catch { return res; }
+        });
+
+        // getStatus'u da yakala (genel online/offline durumu için)
+        Patcher.after(PresenceStore, "getStatus", (_self, args, res) => {
+            try {
+                const userId: string = args[0];
+                const currentUser = UserStore.getCurrentUser?.();
+                if (!userId || !currentUser || userId !== currentUser.id) return res;
+
+                // Eğer halihazırda bir status dönüyorsa dokunma
+                if (res && res !== "offline" && res !== "invisible") return res;
+
+                // Yoksa sessionlardan bul
+                const sessions = SessionStore.getSessions() || {};
+                const vals = Object.values(sessions) as any[];
+                if (vals.length > 0 && vals[0]?.status) return vals[0].status;
             } catch {}
             return res;
         });
+
     },
 
     onStop() {
