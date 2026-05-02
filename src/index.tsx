@@ -11,7 +11,6 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // 1. Gerekli Enmity Yardımcıları
       const getModules = () => {
           try {
               return (window as any).enmity?.metro?.getModules?.() || [];
@@ -53,12 +52,24 @@ const PlatformIndicators: Plugin = {
           return null;
       };
 
-      // 2. Veritabanlarını Bulma
-      const PresenceStore = getByProps("getState", "getPresence") || ((window as any).enmity?.metro?.getByStoreName?.("PresenceStore"));
-      const UserStore = getByProps("getCurrentUser") || ((window as any).enmity?.metro?.getByStoreName?.("UserStore"));
-      const SessionStore = getByProps("getSessions") || ((window as any).enmity?.metro?.getByStoreName?.("SessionsStore"));
+      // GECİKMELİ (LAZY) YÜKLEME - HATA BURADAYDI! 
+      // Uygulama açılırken anında arayınca bulamıyordu. O yüzden fonksiyon içine aldık.
+      const getStore = (name: string) => {
+          try {
+              const modules = (window as any).enmity?.metro?.getModules?.() || [];
+              for (const m of modules) {
+                  if (m && m.default && typeof m.default.getName === "function" && m.default.getName() === name) return m.default;
+                  if (m && typeof m.getName === "function" && m.getName() === name) return m;
+              }
+          } catch(e) {}
+          return null;
+      };
 
       const getPlatformString = (userId: string) => {
+          const PresenceStore = getStore("PresenceStore") || getByProps("getState", "getPresence");
+          const UserStore = getStore("UserStore") || getByProps("getCurrentUser");
+          const SessionStore = getStore("SessionsStore") || getByProps("getSessions");
+
           if (!PresenceStore || !UserStore) return null;
           
           let statuses;
@@ -94,9 +105,6 @@ const PlatformIndicators: Plugin = {
           return " " + icons.join(" ");
       };
 
-      // 3. VENDETTA BİREBİR KOPYALANMIŞ UI YAMALARI
-      
-      // Orijinal mobil telefon ikonunu gizle (zaten biz emoji ekleyeceğiz)
       const StatusModule = findByName("Status");
       if (StatusModule) {
           Patcher.before(StatusModule, "default", (self, args) => {
@@ -106,7 +114,6 @@ const PlatformIndicators: Plugin = {
           });
       }
 
-      // 1. Profil Sayfası: DisplayName
       const DisplayNameModule = findByName("DisplayName");
       if (DisplayNameModule) {
           Patcher.after(DisplayNameModule, "default", (self, args, res) => {
@@ -115,9 +122,14 @@ const PlatformIndicators: Plugin = {
                   if (user && user.id) {
                       const icons = getPlatformString(user.id);
                       if (icons) {
-                          const targetArray = res.props?.children?.props?.children?.[0]?.props?.children;
-                          if (Array.isArray(targetArray)) {
-                              targetArray.push(<Text key="platform-icons">{icons}</Text>);
+                          // Daha güvenli yerleştirme
+                          if (res && res.props) {
+                              res.props.children = (
+                                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                                      {res.props.children}
+                                      <Text style={{ fontSize: 13, marginLeft: 2 }}>{icons}</Text>
+                                  </View>
+                              );
                           }
                       }
                   }
@@ -126,30 +138,8 @@ const PlatformIndicators: Plugin = {
           });
       }
 
-      // DefaultName Alternatifi
-      const DefaultNameModule = findByName("DefaultName");
-      if (DefaultNameModule) {
-          Patcher.after(DefaultNameModule, "default", (self, args, res) => {
-              try {
-                  const user = args[0]?.user;
-                  if (user && user.id) {
-                      const icons = getPlatformString(user.id);
-                      if (icons) {
-                          const targetArray = res.props?.children?.[0]?.props?.children;
-                          if (Array.isArray(targetArray)) {
-                              targetArray.push(<Text key="platform-icons">{icons}</Text>);
-                          }
-                      }
-                  }
-              } catch(e) {}
-              return res;
-          });
-      }
-
-      // 2. Üye Listesi: GuildMemberRow (Eski Sürüm / Standart Sunucu Listesi)
       const GuildMemberRowModule = getByProps("GuildMemberRow");
       if (GuildMemberRowModule && GuildMemberRowModule.GuildMemberRow) {
-          // React.memo olduğu için 'type' yamalanmalı
           if (typeof GuildMemberRowModule.GuildMemberRow === "object" && GuildMemberRowModule.GuildMemberRow.type) {
               Patcher.after(GuildMemberRowModule.GuildMemberRow, "type", (self, args, res) => {
                   try {
@@ -163,10 +153,18 @@ const PlatformIndicators: Plugin = {
                       const targetView = findInReactTree(res, n => n?.props?.style?.flexDirection === "row");
                       if (targetView && Array.isArray(targetView.props.children)) {
                           targetView.props.children.splice(2, 0, (
-                              <View key="GuildMemberRowStatusIconsView" style={{ flexDirection: "row" }}>
-                                  <Text>{icons}</Text>
+                              <View key="GuildMemberRowStatusIconsView" style={{ flexDirection: "row", alignItems: "center" }}>
+                                  <Text style={{ fontSize: 13 }}>{icons}</Text>
                               </View>
                           ));
+                      } else if (res && res.props) {
+                          // Güvenli yedek yama
+                          res.props.children = (
+                              <View style={{ flex: 1, flexDirection: "row", alignItems: "center" }}>
+                                  <View style={{ flex: 1 }}>{res.props.children}</View>
+                                  <Text style={{ fontSize: 13 }}>{icons}</Text>
+                              </View>
+                          );
                       }
                   } catch(e) {}
                   return res;
@@ -174,7 +172,6 @@ const PlatformIndicators: Plugin = {
           }
       }
 
-      // 3. Üye Listesi ve DM Listesi: UserRow (Yeni Sürüm / Tabs V2 / DM'ler)
       const userRows = findByTypeNameAll("UserRow");
       userRows.forEach(UserRowComp => {
           if (typeof UserRowComp === "object" && UserRowComp.type) {
@@ -190,7 +187,7 @@ const PlatformIndicators: Plugin = {
                       if (res && res.props && res.props.label) {
                           const oldLabel = res.props.label;
                           res.props.label = (
-                              <View style={{ flex: 1, justifyContent: "flex-start", flexDirection: "row" }} key="TabsV2MemberListStatusIconsView">
+                              <View style={{ flex: 1, justifyContent: "space-between", flexDirection: "row", alignItems: "center" }} key="TabsV2MemberListStatusIconsView">
                                   {oldLabel}
                                   <View key="TabsV2MemberListStatusIconsInner" style={{ flexDirection: "row", marginLeft: 4, alignItems: "center" }}>
                                       <Text style={{ fontSize: 13 }}>{icons}</Text>
