@@ -1,8 +1,8 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
-import { getByProps, getByName } from 'enmity/metro';
+import { getByProps, getByDisplayName } from 'enmity/metro';
 import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
-import { find } from 'enmity/api/assets';
+import { getIDByName } from 'enmity/api/assets';
 import manifest from '../manifest.json';
 
 const Patcher = create('PlatformIndicators');
@@ -11,31 +11,23 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // NEDEN HİÇBİR ŞEY ÇIKMADI? Çünkü "DisplayName" ve "GuildMemberRow" isimleri Discord'un 
-      // eski sürümlerine aitmiş! Bunny (Vendetta) eklentilerinde kullanılan YENİ 261.0 uyumlu 
-      // komponent isimlerini (ProfileHeader, MemberListItem) buldum!
-      // Ayrıca logoları dışarıdan çekmek yerine ENMITY'NİN KENDİ ASSET SİSTEMİYLE Discord'un 
-      // içindeki %100 orijinal, kendi çizdiği Asset logolarını (ic_mobile vb.) kullanıyoruz!
-
+      // EN BÜYÜK SORUN ÇÖZÜLDÜ: React komponentleri "getByName" ile bulunamıyor çünkü
+      // Discord uygulaması küçültülmüş (minified) olduğu için "name" özellikleri siliniyor.
+      // Bunny eklentilerinin asıl taktiği olan "getByDisplayName" metodunu kullanmak gerekiyormuş!
+      
       const SessionStore = getByProps("getSessions", "getSession");
       const UserStore = getByProps("getUser", "getCurrentUser");
       const { View, Image } = getByProps("View", "Image") || {};
       
       if (!SessionStore || !UserStore || !View || !Image) return;
 
-      // DISCORD'UN KENDİ İÇİNDEKİ %100 ORİJİNAL LOGOLARINI ÇEKİYORUZ! (Bunny'nin yaptığı gibi)
-      const getAssetSafe = (keywords: string[]) => {
-          try {
-              return find(a => a && a.name && keywords.some(k => a.name.toLowerCase().includes(k)))?.id;
-          } catch(e) { return null; }
-      };
-
+      // BUNNY EKLENTİSİNDEKİ ORİJİNAL LOGO İSİMLERİ (Nokta atışı varlık ID'leri)
       const nativeIcons = {
-          desktop: getAssetSafe(["desktop", "window", "computer"]),
-          mobile: getAssetSafe(["mobile", "phone", "iphone"]),
-          web: getAssetSafe(["globe", "web", "browser"]),
-          embedded: getAssetSafe(["console", "gamepad", "xbox"]),
-          vr: getAssetSafe(["vr", "headset", "virtual"])
+          desktop: getIDByName("ic_desktop"),
+          mobile: getIDByName("ic_mobile_device"),
+          web: getIDByName("ic_web"),
+          embedded: getIDByName("ic_console"),
+          vr: getIDByName("ic_vr")
       };
 
       const colors = {
@@ -54,7 +46,7 @@ const PlatformIndicators: Plugin = {
               for (let i = 0; i < vals.length; i++) {
                   const client = vals[i]?.clientInfo?.client;
                   const status = vals[i]?.status || "online";
-                  if (client) {
+                  if (client && nativeIcons[client as keyof typeof nativeIcons]) {
                       if (!activeClients.find(c => c.client === client)) {
                           activeClients.push({ client, status });
                       }
@@ -72,7 +64,7 @@ const PlatformIndicators: Plugin = {
                               <Image 
                                   key={i} 
                                   source={assetId} 
-                                  style={{ width: 16, height: 16, marginLeft: 4, tintColor: (colors as any)[c.status] || colors.online }} 
+                                  style={{ width: 14, height: 14, marginLeft: 2, tintColor: (colors as any)[c.status] || colors.online }} 
                               />
                           );
                       })}
@@ -96,35 +88,28 @@ const PlatformIndicators: Plugin = {
           return null;
       };
 
-      const patchComponent = (componentName: string, isDefault: boolean = true) => {
-          const Module = getByName(componentName);
+      const patchComponent = (displayName: string) => {
+          const Module = getByDisplayName(displayName);
           if (!Module) return;
           
-          const target = isDefault ? (Module.default || Module) : Module;
-          if (typeof target !== "function" && typeof target.type !== "function") return;
-
-          Patcher.after(Module, isDefault ? (Module.default ? "default" : componentName) : "type", (self, args, res) => {
+          Patcher.after(Module, "default", (self, args, res) => {
               try {
                   const user = args[0]?.user || args[0]?.message?.author;
                   const currentUser = UserStore.getCurrentUser();
                   if (user && currentUser && user.id === currentUser.id) {
                       const iconElements = getMyPlatformIcons();
                       if (iconElements) {
-                          // Eğer daha önce eklendiyse tekrar ekleme
                           if (findInReactTree(res, n => n?.key === "MyPlatformIcons")) return res;
 
-                          // Satır bazlı arama
                           const targetView = findInReactTree(res, n => n?.props?.style?.flexDirection === "row" || n?.type?.displayName === "MessageUsername");
                           
                           if (targetView && Array.isArray(targetView.props.children)) {
-                              // Elemanları araya sokuştur
                               targetView.props.children.push(
                                   <View key="MyPlatformIcons" style={{ flexDirection: "row", alignItems: "center" }}>
                                       {iconElements}
                                   </View>
                               );
                           } else if (res && res.props && Array.isArray(res.props.children)) {
-                              // Bulamazsak en sona ekle
                               res.props.children.push(
                                   <View key="MyPlatformIcons" style={{ flexDirection: "row", alignItems: "center" }}>
                                       {iconElements}
@@ -138,15 +123,11 @@ const PlatformIndicators: Plugin = {
           });
       };
 
-      // YENİ DISCORD 261.0 UYUMLU KOMPONENT İSİMLERİ (Bunny eklentilerinden alındı)
+      // BUNNY TAKTİĞİ: "name" yerine "displayName" ile arama yapıyoruz.
       patchComponent("ProfileHeader");
       patchComponent("MemberListItem");
       patchComponent("ChatProfile");
       patchComponent("MessageHeader");
-      
-      // Eski isimler (Yedek)
-      patchComponent("DisplayName");
-      patchComponent("GuildMemberRow", false);
 
    },
 
