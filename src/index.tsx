@@ -9,42 +9,37 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // ÖNEMLİ DÜZELTME: Discord modülleri uygulama ilk açıldığında hemen yüklenmez.
-      // Bu yüzden modülleri en başta değil, ihtiyaç duyduğumuzda anlık olarak (dinamik) arıyoruz.
-      let cachedPresenceStore: any = null;
-      let cachedSessionStore: any = null;
-      let cachedUserStore: any = null;
-
-      const getPresenceStore = () => {
-          if (cachedPresenceStore) return cachedPresenceStore;
-          cachedPresenceStore = (window as any).enmity?.metro?.getByStoreName?.("PresenceStore") || getByProps("getState", "getPresence") || getByProps("clientStatuses");
-          return cachedPresenceStore;
+      // Discord'un tüm Veritabanlarını (Store) kesin olarak bulmamızı sağlayan özel tarayıcı.
+      // Discord'da her Store'un bir .getName() fonksiyonu vardır!
+      const getByStoreName = (name: string) => {
+          try {
+              const modules = (window as any).enmity?.metro?.getModules?.() || [];
+              for (const m of modules) {
+                  if (m && m.default && typeof m.default.getName === "function" && m.default.getName() === name) {
+                      return m.default;
+                  }
+                  if (m && typeof m.getName === "function" && m.getName() === name) {
+                      return m;
+                  }
+              }
+          } catch(e) {}
+          return null;
       };
 
-      const getSessionStore = () => {
-          if (cachedSessionStore) return cachedSessionStore;
-          cachedSessionStore = (window as any).enmity?.metro?.getByStoreName?.("SessionsStore") || getByProps("getSessions");
-          return cachedSessionStore;
-      };
-
-      const getUserStore = () => {
-          if (cachedUserStore) return cachedUserStore;
-          cachedUserStore = (window as any).enmity?.metro?.getByStoreName?.("UserStore") || getByProps("getUser", "getCurrentUser");
-          return cachedUserStore;
-      };
+      let PresenceStore: any = null;
+      let SessionStore: any = null;
+      let UserStore: any = null;
 
       const getPlatformString = (userId: string) => {
-          const PresenceStore = getPresenceStore();
-          const UserStore = getUserStore();
-          const SessionStore = getSessionStore();
+          if (!PresenceStore) PresenceStore = getByStoreName("PresenceStore");
+          if (!UserStore) UserStore = getByStoreName("UserStore");
+          if (!SessionStore) SessionStore = getByStoreName("SessionsStore");
 
-          // Hala bulunamazsa (ki bu imkansız olmalı), hata göster.
           if (!PresenceStore || !UserStore) return " [❓]";
           
           let statuses;
           try {
               const currentUser = UserStore.getCurrentUser();
-              
               if (currentUser && userId === currentUser.id && SessionStore) {
                   const sessions = SessionStore.getSessions() || {};
                   statuses = {};
@@ -60,10 +55,10 @@ const PlatformIndicators: Plugin = {
                   }
               }
           } catch(e) {
-              return " [⚠️]"; // Okuma hatası
+              return " [⚠️]"; 
           }
           
-          if (!statuses) return ""; // Çevrimdışı
+          if (!statuses) return ""; 
           
           const platforms = Object.keys(statuses);
           if (platforms.length === 0) return "";
@@ -80,88 +75,79 @@ const PlatformIndicators: Plugin = {
           return " " + icons.join("");
       };
 
-      const FluxDispatcher = getByProps("dispatch", "subscribe");
+      // KESİN VE KALICI VERİ YAMASI:
+      // Kullanıcı veritabanından (UserStore) biri her çağrıldığında anında araya girip ismini değiştiriyoruz.
+      // Böylece ekranlar değişse bile veritabanından veri her çekildiğinde isimler ikonlu gelecek.
       
-      if (FluxDispatcher) {
-          Patcher.before(FluxDispatcher, "dispatch", (self, args) => {
-              try {
-                  const event = args[0];
-                  if (!event) return;
-
-                  if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
-                      if (event.message && event.message.author) {
-                          const iconsStr = getPlatformString(event.message.author.id);
-                          if (iconsStr && iconsStr !== "") {
-                              const author = event.message.author;
-                              const currentGlobalName = author.global_name || author.username;
-                              
-                              if (!currentGlobalName.includes(iconsStr.trim())) {
-                                  event.message = {
-                                      ...event.message,
-                                      author: {
-                                          ...author,
-                                          global_name: currentGlobalName + iconsStr,
-                                          username: author.username + iconsStr
-                                      }
-                                  };
-                              }
-                          }
-                      }
-                  } 
-                  else if (event.type === "LOAD_MESSAGES_SUCCESS") {
-                      if (Array.isArray(event.messages)) {
-                          event.messages = event.messages.map((m: any) => {
-                              if (m && m.author) {
-                                  const iconsStr = getPlatformString(m.author.id);
-                                  if (iconsStr && iconsStr !== "") {
-                                      const currentGlobalName = m.author.global_name || m.author.username;
-                                      if (!currentGlobalName.includes(iconsStr.trim())) {
-                                          return {
-                                              ...m,
-                                              author: {
-                                                  ...m.author,
-                                                  global_name: currentGlobalName + iconsStr,
-                                                  username: m.author.username + iconsStr
-                                              }
-                                          };
-                                      }
-                                  }
-                              }
-                              return m;
-                          });
-                      }
+      const patchUserStore = () => {
+          const store = getByStoreName("UserStore");
+          if (!store) return;
+          
+          Patcher.after(store, "getUser", (self, args, res) => {
+              if (!res || res.__platformPatched) return res;
+              
+              const iconsStr = getPlatformString(res.id);
+              if (iconsStr && iconsStr !== "") {
+                  // Orijinal objeyi bozmamak ve React donmalarını (frozen object) aşmak için 
+                  // objenin tam bir klonunu oluşturup onun üzerinde değişiklik yapıyoruz.
+                  const clonedUser = Object.create(Object.getPrototypeOf(res));
+                  Object.assign(clonedUser, res);
+                  
+                  const currentGlobalName = clonedUser.globalName || clonedUser.username;
+                  if (!currentGlobalName.includes(iconsStr.trim())) {
+                      clonedUser.username = clonedUser.username + iconsStr;
+                      if (clonedUser.globalName) clonedUser.globalName = clonedUser.globalName + iconsStr;
+                      clonedUser.__platformPatched = true; // Sonsuz döngüyü engelle
+                      return clonedUser;
                   }
-                  else if (event.type === "GUILD_MEMBER_LIST_UPDATE") {
-                      if (Array.isArray(event.groups)) {
-                          event.groups.forEach((group: any) => {
-                              if (Array.isArray(group.items)) {
-                                  group.items.forEach((item: any) => {
-                                      if (item.member && item.member.user) {
-                                          const iconsStr = getPlatformString(item.member.user.id);
-                                          if (iconsStr && iconsStr !== "") {
-                                              const user = item.member.user;
-                                              const currentGlobalName = user.global_name || user.username;
-                                              
-                                              if (!currentGlobalName.includes(iconsStr.trim())) {
-                                                  item.member = {
-                                                      ...item.member,
-                                                      user: {
-                                                          ...user,
-                                                          global_name: currentGlobalName + iconsStr,
-                                                          username: user.username + iconsStr
-                                                      }
-                                                  };
-                                              }
-                                          }
-                                      }
-                                  });
-                              }
-                          });
-                      }
-                  }
-              } catch (e) {}
+              }
+              return res;
           });
-      }
+      };
+
+      // Aynı işlemi sunucu üye listesi (GuildMemberStore) için de yapıyoruz.
+      const patchGuildMemberStore = () => {
+          const store = getByStoreName("GuildMemberStore");
+          if (!store) return;
+          
+          Patcher.after(store, "getMember", (self, args, res) => {
+              if (!res || res.__platformPatched) return res;
+              
+              // getMember'ın 2. argümanı userId'dir (0. argüman guildId)
+              const userId = args[1] || res.userId;
+              if (!userId) return res;
+
+              const iconsStr = getPlatformString(userId);
+              if (iconsStr && iconsStr !== "") {
+                  const clonedMember = Object.create(Object.getPrototypeOf(res));
+                  Object.assign(clonedMember, res);
+                  
+                  const currentNick = clonedMember.nick;
+                  if (currentNick) {
+                      if (!currentNick.includes(iconsStr.trim())) {
+                          clonedMember.nick = currentNick + iconsStr;
+                          clonedMember.__platformPatched = true;
+                          return clonedMember;
+                      }
+                  } else {
+                      clonedMember.nick = iconsStr;
+                      clonedMember.__platformPatched = true;
+                      return clonedMember;
+                  }
+              }
+              return res;
+          });
+      };
+
+      // FluxDispatcher yamasını çöpe atıyoruz, çünkü menü geçişlerinde veri yenilenmezse ikonlar gidiyor.
+      // Sadece ana veritabanlarını (Store) yamalamak en kalıcı çözümdür.
+      
+      // Biraz gecikmeli olarak yamaları uygula ki Discord Store'ları belleğe tamamen yüklemiş olsun
+      setTimeout(() => {
+          patchUserStore();
+          patchGuildMemberStore();
+      }, 3000);
+
    },
 
    onStop() {
