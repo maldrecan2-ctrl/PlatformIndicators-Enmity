@@ -1,6 +1,6 @@
 {
-   "name": "PlatformIndicators",
-   "description": "Adds platform indicators (Desktop, Mobile, Web...) to users",
+   "name": "PlatformSpoof",
+   "description": "Spoof what platform or device you're on",
    "version": "1.0.0",
    "license": "GPL-3.0",
    "author": "rolex7exe",

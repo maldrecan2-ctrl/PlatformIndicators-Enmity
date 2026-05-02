@@ -23,39 +23,22 @@ const PlatformIndicators: Plugin = {
     ...manifest,
 
     onStart() {
-        const UserStore = getByProps("getUser", "getCurrentUser");
+        const SessionStore = getByProps("getSessions", "getSession");
+        const UserStore    = getByProps("getUser", "getCurrentUser");
         const { View, Image } = getByProps("View", "Image") || {};
 
         if (!UserStore || !View || !Image) return;
 
-        // SESİON STORE İÇİN FARKLI ARAMA YÖNTEMLERİ DENE
-        // Discord'un farklı sürümlerinde farklı isimler kullanılıyor
-        const SessionStore = 
-            getByProps("getSessions", "getRemoteActivities") ||   // v261
-            getByProps("getSessions", "getSessionId") ||           // eski
-            getByProps("getSessions") ||                           // minimal
-            getByProps("getActiveSession") ||                      // alternatif
-            getByProps("getSessionId", "getActiveJDA");            // başka alternatif
-
         const getActiveSessions = (): { client: string; status: string }[] => {
             if (!SessionStore) return [];
             try {
-                // Farklı method isimleri dene
-                const sessions =
-                    SessionStore.getSessions?.() ??
-                    SessionStore.getActiveSessions?.() ??
-                    SessionStore.getAllSessions?.() ??
-                    {};
-
+                const sessions = SessionStore.getSessions?.() ?? {};
                 const seen = new Set<string>();
                 const result: { client: string; status: string }[] = [];
                 for (const s of Object.values(sessions) as any[]) {
                     const client: string = s?.clientInfo?.client;
                     const status: string = s?.status ?? "online";
-                    if (client && !seen.has(client)) {
-                        seen.add(client);
-                        result.push({ client, status });
-                    }
+                    if (client && !seen.has(client)) { seen.add(client); result.push({ client, status }); }
                 }
                 return result;
             } catch { return []; }
@@ -77,7 +60,7 @@ const PlatformIndicators: Plugin = {
             }, ...icons);
         };
 
-        // UserRow — DM listesi (bulundu, çalışıyor)
+        // ── UserRow — sunucu üye listesinde test et ──────────────────────────
         const UserRowModule = getByTypeName("UserRow", { default: true });
         if (UserRowModule?.default) {
             let toastShown = false;
@@ -88,24 +71,18 @@ const PlatformIndicators: Plugin = {
 
                     const props = args[0] ?? {};
 
-                    // İlk render'da args yapısını göster
+                    // İlk render'da teşhis Toast'u (sadece bir kez)
                     if (!toastShown) {
                         toastShown = true;
-                        const keys = Object.keys(props).join(",");
-                        const sessions = getActiveSessions();
-                        Toasts.open({ content: `UserRow keys: ${keys.slice(0, 80)} | sess:${sessions.length}` });
+                        const keys = Object.keys(props).slice(0, 8).join(",");
+                        const sess = getActiveSessions();
+                        Toasts.open({ content: `UserRow! keys:${keys} | sess:${sess.length}` });
                     }
 
-                    // Daha geniş userId arama — her ihtimali kapsıyor
+                    // Kullanıcı ID bul
                     const userId: string =
-                        props?.user?.id ??
-                        props?.userId ??
-                        props?.uid ??
-                        props?.id ??
-                        (typeof props?.recipientId === "string" ? props.recipientId : "") ??
-                        res?.props?.user?.id ??
-                        res?.props?.userId ??
-                        "";
+                        props?.user?.id ?? props?.userId ?? props?.uid ??
+                        props?.id ?? res?.props?.user?.id ?? "";
 
                     if (!userId || userId !== current.id) return res;
 
@@ -115,47 +92,50 @@ const PlatformIndicators: Plugin = {
 
                     const ch = res.props.children;
                     if (Array.isArray(ch)) {
-                        if (ch.some((c: any) => c?.key === "pi_icons")) return res;
-                        res.props.children = [...ch, iconRow];
-                    } else if (ch) {
+                        if (!ch.some((c: any) => c?.key === "pi_icons"))
+                            res.props.children = [...ch, iconRow];
+                    } else {
                         res.props.children = [ch, iconRow];
                     }
-                } catch(e) {}
+                } catch {}
                 return res;
             });
         }
 
-        // getUserTag — Kullanıcı etiketi (bulundu, çalışıyor)
-        const getUserTagModule = getByTypeName("getUserTag", { default: true }) ||
-                                 getByProps("getUserTag");
-        if (getUserTagModule) {
-            const fnName = getUserTagModule.getUserTag ? "getUserTag" : "default";
-            let tagToastShown = false;
-            Patcher.after(getUserTagModule, fnName, (_s: any, args: any[], res: any) => {
-                try {
-                    const current = UserStore.getCurrentUser?.();
-                    if (!current) return res;
+        // ── getCurrentUser — HER ZAMAN çalışan güvenli yedek ───────────────
+        // Bu kesin çalışıyor (2.3.0'da kanıtlandı). Sessions orada yüklü oluyor.
+        Patcher.after(UserStore, "getCurrentUser", (_s: any, _a: any, res: any) => {
+            try {
+                if (!res?.username) return res;
+                const sessions = getActiveSessions();
+                if (!sessions.length) return res;
 
-                    if (!tagToastShown) {
-                        tagToastShown = true;
-                        Toasts.open({ content: `getUserTag args[0]: ${JSON.stringify(args[0]).slice(0, 80)}` });
+                // Asset ID varsa görünmez bir marker ekle (debug)
+                const hasAssets = Object.values(assetIds).some(Boolean);
+
+                // Sadece asset ID yoksa text emoji kullan
+                const icons = sessions.map(({ client }) => {
+                    if (hasAssets && (assetIds as any)[client]) {
+                        // Asset varsa sadece marker — zaten UserRow'dan ikonu görüyoruz
+                        return "";
                     }
+                    // Fallback text
+                    const m: Record<string, string> = {
+                        desktop: " \u{1F5A5}", mobile: " \u{1F4F1}",
+                        web: " \u{1F310}", embedded: " \u{1F3AE}", vr: " \u{1F97D}",
+                    };
+                    return m[client] ?? "";
+                }).join("");
 
-                    const userId: string = args[0]?.id ?? args[0]?.userId ?? args[0] ?? "";
-                    if (!userId || userId !== current.id) return res;
-
-                    const sessions = getActiveSessions();
-                    const iconRow = buildIconRow(sessions);
-                    if (!iconRow) return res;
-
-                    if (!res) return iconRow;
-                    return React.createElement(View, {
-                        style: { flexDirection: "row", alignItems: "center" }
-                    }, res, iconRow);
-                } catch(e) {}
-                return res;
-            });
-        }
+                if (icons && !res.username.includes(icons.trim())) {
+                    return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
+                        username:   res.username + icons,
+                        globalName: res.globalName ? res.globalName + icons : res.globalName,
+                    });
+                }
+            } catch {}
+            return res;
+        });
     },
 
     onStop() { Patcher.unpatchAll(); }
