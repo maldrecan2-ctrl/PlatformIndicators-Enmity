@@ -7,24 +7,38 @@ import manifest from '../manifest.json';
 const { View, Text } = getByProps("View", "Text") || {};
 const Patcher = create('PlatformIndicators');
 
-function findInReactTree(tree: any, filter: (node: any) => boolean): any {
-    if (!tree) return null;
-    if (filter(tree)) return tree;
-    if (Array.isArray(tree)) {
-        for (const child of tree) {
-            const found = findInReactTree(child, filter);
-            if (found) return found;
-        }
-    } else if (tree.props && tree.props.children) {
-        return findInReactTree(tree.props.children, filter);
-    }
-    return null;
-}
-
 const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
+      // 1. Gelişmiş Metro Arayıcıları (Vendetta tarzı)
+      const getModules = () => {
+          try {
+              return (window as any).enmity?.metro?.getModules?.() || [];
+          } catch(e) {
+              return [];
+          }
+      };
+
+      const findByName = (name: string) => {
+          for (const m of getModules()) {
+              if (m && m.default && m.default.name === name) return m;
+              if (m && m.name === name) return m;
+              if (m && m.default && m.default.displayName === name) return m;
+              if (m && m.displayName === name) return m;
+          }
+          return null;
+      };
+
+      const findByTypeName = (name: string) => {
+          const results = [];
+          for (const m of getModules()) {
+              if (m && m.default && m.default.type && m.default.type.name === name) results.push(m);
+              else if (m && m.type && m.type.name === name) results.push(m);
+          }
+          return results;
+      };
+
       const getStore = (name: string) => {
           try {
               return (window as any).enmity?.metro?.getByStoreName?.(name) || null;
@@ -85,6 +99,7 @@ const PlatformIndicators: Plugin = {
           );
       };
 
+      // 2. Çok Daha Kapsamlı Yama Fonksiyonu
       const patchComponent = (module: any, prop: string, callback: any) => {
           if (!module || !module[prop]) return;
           if (typeof module[prop] === "function") {
@@ -96,25 +111,79 @@ const PlatformIndicators: Plugin = {
           }
       };
 
-      // Vendetta'daki gibi tam olarak status ikonlarının olduğu Row'u bulalım
-      const GuildMemberModule = getByProps("GuildMemberRow");
-      if (GuildMemberModule) {
-          patchComponent(GuildMemberModule, "GuildMemberRow", (self: any, args: any, res: any) => {
+      // Yeni Discord Redesign (Tabs V2) bileşenlerini arama
+      
+      // A. Kanal İçi İsimler (Chat/Message)
+      const MessageTimestamp = getByProps("MessageTimestamp");
+      if (MessageTimestamp) patchComponent(MessageTimestamp, "default", patchChat);
+      
+      const ChatRow = findByName("ChatRow");
+      if (ChatRow) patchComponent(ChatRow, "default", patchChat);
+      
+      function patchChat(self: any, args: any, res: any) {
+          try {
+              const message = args[0]?.message;
+              if (!message || !message.author) return res;
+              const icons = getPlatformIcons(message.author.id);
+              if (!icons) return res;
+              if (res && res.props) {
+                  res.props.children = (
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          {res.props.children}
+                          {icons}
+                      </View>
+                  );
+              }
+          } catch(e) {}
+          return res;
+      }
+
+      // B. Üyeler Listesi (MemberListItem / UserRow / GuildMemberRow)
+      const memberListModules = [
+          getByProps("MemberListItem"),
+          getByProps("GuildMemberRow"),
+          findByName("UserRow"),
+          findByName("MemberListItem"),
+          findByName("GuildMemberRow")
+      ];
+      
+      memberListModules.forEach(mod => {
+          if (!mod) return;
+          const propName = mod.default ? "default" : (mod.MemberListItem ? "MemberListItem" : (mod.GuildMemberRow ? "GuildMemberRow" : (mod.UserRow ? "UserRow" : null)));
+          if (propName) {
+              patchComponent(mod, propName, (self: any, args: any, res: any) => {
+                  try {
+                      const user = args[0]?.user;
+                      if (!user) return res;
+                      const icons = getPlatformIcons(user.id);
+                      if (!icons) return res;
+                      if (res && res.props) {
+                          res.props.children = (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
+                                  <View style={{ flex: 1 }}>{res.props.children}</View>
+                                  {icons}
+                              </View>
+                          );
+                      }
+                  } catch (e) {}
+                  return res;
+              });
+          }
+      });
+      
+      // TypeName üzerinden arama (Vendetta Stili)
+      const userRows = findByTypeName("UserRow");
+      userRows.forEach(mod => {
+          patchComponent(mod, "default", (self: any, args: any, res: any) => {
               try {
                   const user = args[0]?.user;
                   if (!user) return res;
                   const icons = getPlatformIcons(user.id);
                   if (!icons) return res;
-
-                  // Vendetta stili: flexDirection: "row" olan ve statüleri tutan view'u bul.
-                  const statusView = findInReactTree(res, (n) => n?.props?.style?.flexDirection === "row");
-                  if (statusView && Array.isArray(statusView.props?.children)) {
-                      statusView.props.children.push(icons);
-                  } else {
-                      // Eğer bulamazsa, en üst düzeyde ismin yanına zorla ekle
-                      return (
-                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
-                              <View style={{ flex: 1 }}>{res}</View>
+                  if (res && res.props) {
+                      res.props.children = (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
+                              <View style={{ flex: 1 }}>{res.props.children}</View>
                               {icons}
                           </View>
                       );
@@ -122,54 +191,8 @@ const PlatformIndicators: Plugin = {
               } catch (e) {}
               return res;
           });
-      }
+      });
 
-      // Kullanıcı Profili Üst Bilgisi (Profile)
-      const UserProfile = getByProps("UserProfilePrimaryInfo");
-      if (UserProfile) {
-          patchComponent(UserProfile, "default", (self: any, args: any, res: any) => {
-              try {
-                  const user = args[0]?.user;
-                  if (!user) return res;
-                  const icons = getPlatformIcons(user.id);
-                  if (!icons) return res;
-
-                  return (
-                      <View>
-                          {res}
-                          <View style={{ marginTop: 4, flexDirection: 'row', justifyContent: 'center' }}>{icons}</View>
-                      </View>
-                  );
-              } catch(e) {}
-              return res;
-          });
-      }
-
-      // Sohbet İçi Mesajlar
-      const MessageHeader = getByProps("MessageTimestamp");
-      if (MessageHeader) {
-          patchComponent(MessageHeader, "default", (self: any, args: any, res: any) => {
-              try {
-                  const message = args[0]?.message;
-                  if (!message || !message.author) return res;
-                  const icons = getPlatformIcons(message.author.id);
-                  if (!icons) return res;
-
-                  const headerRow = findInReactTree(res, (n) => n?.props?.children && Array.isArray(n.props.children) && n.props.children.length > 1);
-                  if (headerRow && Array.isArray(headerRow.props.children)) {
-                      headerRow.props.children.push(icons);
-                  } else {
-                      return (
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                              {res}
-                              {icons}
-                          </View>
-                      );
-                  }
-              } catch(e) {}
-              return res;
-          });
-      }
    },
 
    onStop() {
