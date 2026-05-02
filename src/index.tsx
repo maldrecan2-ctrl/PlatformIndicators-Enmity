@@ -40,39 +40,44 @@ const PlatformIndicators: Plugin = {
         };
 
         // ── getCurrentUser ────────────────────────────────────────────────────
-        // SADECE pronouns alanını değiştiriyoruz.
-        // Discord pronoms alanını YALNIZCA profil sayfasında gösterir — sohbette ASLA çıkmaz.
-        // username ve globalName'e dokunmuyoruz → chat etkilenmez.
+        // SADECE username alanını değiştiriyoruz.
+        // Discord sohbette globalName'i gösterir → chat etkilenmez.
+        // username sadece profilin ALT kısmında görünür → istediğimiz bu!
         Patcher.after(UserStore, "getCurrentUser", (_s: any, _a: any, res: any) => {
             try {
-                if (!res) return res;
+                if (!res?.username) return res;
                 const text = buildPlatformText();
                 if (!text) return res;
 
+                // Daha önce eklendiyse tekrar ekleme
+                if (res.username.includes(" · ") || res.username.includes("Desktop") || res.username.includes("Phone")) return res;
+
                 return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
-                    pronouns: text,  // "Phone · Desktop" gibi temiz metin
+                    username: res.username + " [" + text + "]",
+                    // globalName'e DOKUNMUYORUZ → sohbette çıkmaz
                 });
             } catch {}
             return res;
         });
 
         // ── getUser ───────────────────────────────────────────────────────────
-        // Başkası profilimizdeki pronoms'u gördüğünde de aynı şeyi döndür
         Patcher.after(UserStore, "getUser", (_s: any, args: any[], res: any) => {
             try {
-                if (!res) return res;
+                if (!res?.username) return res;
                 const current = UserStore.getCurrentUser?.();
                 if (!current || res.id !== current.id) return res;
 
                 const text = buildPlatformText();
                 if (!text) return res;
+                if (res.username.includes(" · ") || res.username.includes("Desktop") || res.username.includes("Phone")) return res;
 
                 return Object.assign(Object.create(Object.getPrototypeOf(res)), res, {
-                    pronouns: text,
+                    username: res.username + " [" + text + "]",
                 });
             } catch {}
             return res;
         });
+
     },
 
     onStop() {

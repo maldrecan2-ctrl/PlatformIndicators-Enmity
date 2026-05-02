@@ -1,7 +1,7 @@
 {
    "name": "PlatformIndicators",
-   "version": "3.3.0",
-   "description": "Shows active platforms in profile pronouns field only",
+   "version": "3.4.0",
+   "description": "Shows active platforms",
    "authors": [
       {
          "name": "rolex7exe",
