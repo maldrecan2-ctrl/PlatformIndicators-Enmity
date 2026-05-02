@@ -7,28 +7,39 @@ import manifest from '../manifest.json';
 const { View, Text } = getByProps("View", "Text") || {};
 const Patcher = create('PlatformIndicators');
 
+function findInReactTree(tree: any, filter: (node: any) => boolean): any {
+    if (!tree) return null;
+    if (filter(tree)) return tree;
+    if (Array.isArray(tree)) {
+        for (const child of tree) {
+            const found = findInReactTree(child, filter);
+            if (found) return found;
+        }
+    } else if (tree.props && tree.props.children) {
+        return findInReactTree(tree.props.children, filter);
+    }
+    return null;
+}
+
 const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // Olabildiğince çok alternatifle Store'ları arıyoruz
-      let PresenceStore = getByProps("getState", "getPresence") || getByProps("getStatus", "getActivities");
-      let SessionStore = getByProps("getSessions") || getByProps("getSession");
-      let UserStore = getByProps("getCurrentUser") || getByProps("getUser", "getUsers");
+      const getStore = (name: string) => {
+          try {
+              return (window as any).enmity?.metro?.getByStoreName?.(name) || null;
+          } catch (e) {
+              return null;
+          }
+      };
 
-      if (!PresenceStore) {
-          try { PresenceStore = (window as any).enmity?.metro?.getByStoreName?.("PresenceStore"); } catch(e){}
-      }
-      if (!UserStore) {
-          try { UserStore = (window as any).enmity?.metro?.getByStoreName?.("UserStore"); } catch(e){}
-      }
-      if (!SessionStore) {
-          try { SessionStore = (window as any).enmity?.metro?.getByStoreName?.("SessionsStore"); } catch(e){}
-      }
+      const PresenceStore = getStore("PresenceStore") || getByProps("getState", "getPresence");
+      const SessionStore = getStore("SessionsStore") || getByProps("getSessions");
+      const UserStore = getStore("UserStore") || getByProps("getCurrentUser");
 
       const getPlatformIcons = (userId: string) => {
           if (!PresenceStore || !UserStore) {
-              return <Text style={{ color: 'red', fontSize: 12 }}> [?] </Text>;
+              return <Text style={{ color: 'red', fontSize: 14 }}> [?] </Text>;
           }
           
           let statuses;
@@ -50,7 +61,7 @@ const PlatformIndicators: Plugin = {
                   }
               }
           } catch(e) {
-              return <Text style={{ color: 'orange', fontSize: 12 }}> [!] </Text>; 
+              return <Text style={{ color: 'orange', fontSize: 14 }}> [!] </Text>; 
           }
           
           if (!statuses) return null;
@@ -68,46 +79,42 @@ const PlatformIndicators: Plugin = {
           if (icons.length === 0) return null;
 
           return (
-              <View style={{ flexDirection: 'row', marginLeft: 4, alignItems: 'center', justifyContent: 'center' }}>
-                  <Text style={{ fontSize: 12 }}>{icons.join(" ")}</Text>
+              <View style={{ flexDirection: 'row', marginLeft: 6, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 14 }}>{icons.join(" ")}</Text>
               </View>
           );
       };
 
-      // GÜÇLÜ YAMA FONKSİYONU: React.memo() veya objeleri sarmalamak için
-      const patchReactComponent = (module: any, propName: string, patchCallback: any) => {
-          if (!module || !module[propName]) return;
-          const component = module[propName];
-          
-          if (typeof component === "function") {
-              Patcher.after(module, propName, patchCallback);
-          } else if (typeof component === "object") {
-              if (typeof component.type === "function") {
-                  Patcher.after(component, "type", patchCallback);
-              } else if (typeof component.render === "function") {
-                  Patcher.after(component, "render", patchCallback);
-              } else if (typeof component.default === "function") {
-                  Patcher.after(component, "default", patchCallback);
-              }
+      const patchComponent = (module: any, prop: string, callback: any) => {
+          if (!module || !module[prop]) return;
+          if (typeof module[prop] === "function") {
+              Patcher.after(module, prop, callback);
+          } else if (typeof module[prop] === "object") {
+              if (module[prop].type) Patcher.after(module[prop], "type", callback);
+              else if (module[prop].render) Patcher.after(module[prop], "render", callback);
+              else Patcher.after(module, prop, callback);
           }
       };
 
-      // 1. Üyeler Listesi (GuildMemberRow)
+      // Vendetta'daki gibi tam olarak status ikonlarının olduğu Row'u bulalım
       const GuildMemberModule = getByProps("GuildMemberRow");
       if (GuildMemberModule) {
-          patchReactComponent(GuildMemberModule, "GuildMemberRow", (self: any, args: any, res: any) => {
+          patchComponent(GuildMemberModule, "GuildMemberRow", (self: any, args: any, res: any) => {
               try {
                   const user = args[0]?.user;
                   if (!user) return res;
-
                   const icons = getPlatformIcons(user.id);
                   if (!icons) return res;
 
-                  if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 4 }}>
-                              <View style={{ flex: 1 }}>{originalChildren}</View>
+                  // Vendetta stili: flexDirection: "row" olan ve statüleri tutan view'u bul.
+                  const statusView = findInReactTree(res, (n) => n?.props?.style?.flexDirection === "row");
+                  if (statusView && Array.isArray(statusView.props?.children)) {
+                      statusView.props.children.push(icons);
+                  } else {
+                      // Eğer bulamazsa, en üst düzeyde ismin yanına zorla ekle
+                      return (
+                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+                              <View style={{ flex: 1 }}>{res}</View>
                               {icons}
                           </View>
                       );
@@ -117,74 +124,44 @@ const PlatformIndicators: Plugin = {
           });
       }
 
-      // 2. Kullanıcı Satırı (UserRow)
-      const UserRowModule = getByProps("UserRow");
-      if (UserRowModule) {
-          patchReactComponent(UserRowModule, "UserRow", (self: any, args: any, res: any) => {
+      // Kullanıcı Profili Üst Bilgisi (Profile)
+      const UserProfile = getByProps("UserProfilePrimaryInfo");
+      if (UserProfile) {
+          patchComponent(UserProfile, "default", (self: any, args: any, res: any) => {
               try {
                   const user = args[0]?.user;
                   if (!user) return res;
-
                   const icons = getPlatformIcons(user.id);
                   if (!icons) return res;
 
-                  if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                              <View style={{ flex: 1 }}>{originalChildren}</View>
-                              {icons}
-                          </View>
-                      );
-                  }
-              } catch (e) {}
-              return res;
-          });
-      }
-
-      // 3. Sohbet Mesajı İsimleri (MessageHeader / MessageTimestamp)
-      const MessageHeader = getByProps("MessageTimestamp");
-      if (MessageHeader) {
-          patchReactComponent(MessageHeader, "default", (self: any, args: any, res: any) => {
-              try {
-                  const message = args[0]?.message;
-                  if (!message || !message.author) return res;
-                  
-                  const icons = getPlatformIcons(message.author.id);
-                  if (!icons) return res;
-
-                  if (res && res.props && Array.isArray(res.props.children)) {
-                      res.props.children.push(icons);
-                  } else if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                              {originalChildren}
-                              {icons}
-                          </View>
-                      );
-                  }
+                  return (
+                      <View>
+                          {res}
+                          <View style={{ marginTop: 4, flexDirection: 'row', justifyContent: 'center' }}>{icons}</View>
+                      </View>
+                  );
               } catch(e) {}
               return res;
           });
       }
-      
-      // 4. Profil Sayfası İsmi (DisplayName)
-      const DisplayName = getByProps("DisplayName");
-      if (DisplayName) {
-          patchReactComponent(DisplayName, "default", (self: any, args: any, res: any) => {
-              try {
-                  const user = args[0]?.user;
-                  if (!user) return res;
 
-                  const icons = getPlatformIcons(user.id);
+      // Sohbet İçi Mesajlar
+      const MessageHeader = getByProps("MessageTimestamp");
+      if (MessageHeader) {
+          patchComponent(MessageHeader, "default", (self: any, args: any, res: any) => {
+              try {
+                  const message = args[0]?.message;
+                  if (!message || !message.author) return res;
+                  const icons = getPlatformIcons(message.author.id);
                   if (!icons) return res;
 
-                  if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
+                  const headerRow = findInReactTree(res, (n) => n?.props?.children && Array.isArray(n.props.children) && n.props.children.length > 1);
+                  if (headerRow && Array.isArray(headerRow.props.children)) {
+                      headerRow.props.children.push(icons);
+                  } else {
+                      return (
                           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                              {originalChildren}
+                              {res}
                               {icons}
                           </View>
                       );
