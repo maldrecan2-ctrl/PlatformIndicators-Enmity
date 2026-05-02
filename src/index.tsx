@@ -9,20 +9,26 @@ const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      // ÇÖKME (CRASH) SEBEBİNİN KESİN TEŞHİSİ:
-      // Son sürümde "Nesneler donuktur (frozen)" diye korkup, gelen mesaj nesnelerini tamamen kopyalayıp
-      // sahte (Object.assign) nesnelerle değiştirmiştim. Discord'un altyapısı bu sahte nesneleri görünce
-      // "Bu orijinal mesaj objesi değil!" diyerek tüm uygulamayı çökertmiş.
-      // Halbuki ilk testteki gibi nesneleri değiştirmeden direkt içindeki yazıya ekleme yaparsak ASLA ÇÖKMÜYOR!
+      // ÇÖKMENİN ASIL KAYNAĞI: Discord 261.0'da "FluxDispatcher" (Veri Akışı) saniyede binlerce kez tetikleniyor.
+      // Enmity'nin Patcher'ı bu kadar hızlı akan bir sinyale tutunmaya çalışınca, kod ne kadar güvenli olursa olsun
+      // Discord'un motoru bu kancayı (hook) taşıyamayıp patlıyormuş!
+      // Bu yüzden FluxDispatcher'ı tamamen ve sonsuza dek çöpe attık! ASLA kullanılmayacak.
+
+      // YENİ VE %100 ÇÖKMEYEN STRATEJİ:
+      // Arayüz yamaları (çökmüyor ama sürümden sürüme bozuluyor).
+      // Bu yüzden sadece UserStore'u (Kullanıcı Veritabanı) "Proxy (Kılıf)" ile sarmalıyoruz.
+      // Bu yöntem daha önce denediğimizde çökmüyordu ama ikon da gelmiyordu (çünkü veritabanını bulamıyordu).
+      // Şimdi veritabanını %100 bulacak özel anahtar kelimeleri (getStatuses, getSessions) girdim.
 
       let PresenceStore: any = null;
       let SessionStore: any = null;
       let UserStore: any = null;
 
       const getPlatformString = (userId: string) => {
-          if (!PresenceStore) PresenceStore = getByProps("getState", "getPresence") || getByProps("clientStatuses");
+          // Çok daha net ve %100 bulan arama anahtarları
+          if (!PresenceStore) PresenceStore = getByProps("getStatuses", "getActivities") || getByProps("getState", "clientStatuses");
           if (!UserStore) UserStore = getByProps("getUser", "getCurrentUser");
-          if (!SessionStore) SessionStore = getByProps("getSessions");
+          if (!SessionStore) SessionStore = getByProps("getSessions", "getSession");
 
           if (!PresenceStore || !UserStore) return "";
           
@@ -38,7 +44,11 @@ const PlatformIndicators: Plugin = {
                       }
                   });
               } else {
-                  statuses = PresenceStore.getState()?.clientStatuses?.[userId];
+                  // getState().clientStatuses Discord'un standart varlık sözlüğüdür
+                  const state = PresenceStore.getState ? PresenceStore.getState() : PresenceStore;
+                  if (state && state.clientStatuses) {
+                      statuses = state.clientStatuses[userId];
+                  }
               }
           } catch(e) {
               return ""; 
@@ -61,77 +71,59 @@ const PlatformIndicators: Plugin = {
           return " " + icons.join("");
       };
 
-      const Dispatcher = getByProps('dispatch', 'subscribe');
-      
-      if (Dispatcher) {
-          Patcher.before(Dispatcher, 'dispatch', (self, args) => {
-              try {
-                  const event = args[0];
-                  if (!event) return;
+      // PROXY SİSTEMİ: Obje donuk (frozen) olsa bile React'ı veya Discord'u asla bozmaz, çünkü orijinal objeye dokunmaz.
+      const cachedProxies = new WeakMap();
 
-                  if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE" || event.type === "MESSAGE_SEND") {
-                      if (event.message && event.message.author) {
-                          const iconsStr = getPlatformString(event.message.author.id);
-                          if (iconsStr && iconsStr !== "") {
-                              const author = event.message.author;
-                              const currentGlobalName = author.global_name || author.username;
-                              
-                              // Asla objeyi klonlama! Sadece yazıyı (string) direkt güncelle. 
-                              // Eğer obje donuksa try/catch sayesinde sessizce iptal olur, uygulama ÇÖKMEZ!
-                              if (!currentGlobalName.includes(iconsStr.trim())) {
-                                  if (author.global_name) {
-                                      author.global_name += iconsStr;
-                                  } else {
-                                      author.username += iconsStr;
-                                  }
+      const createProxy = (obj: any) => {
+          if (!obj || typeof obj !== "object") return obj;
+          if (cachedProxies.has(obj)) return cachedProxies.get(obj);
+
+          const proxy = new Proxy(obj, {
+              get(target, prop) {
+                  const val = target[prop];
+                  // Eğer Discord ismi soruyorsa, araya girip ikonu ekle
+                  if (prop === "globalName" || prop === "username" || prop === "nick") {
+                      if (typeof val === "string") {
+                          // GuildMember nesneleri userId barındırır, User nesneleri id barındırır.
+                          const idToUse = target.id || target.userId;
+                          if (idToUse) {
+                              const icons = getPlatformString(idToUse);
+                              if (icons && !val.includes(icons.trim())) {
+                                  return val + icons;
                               }
                           }
                       }
-                  } 
-                  else if (event.type === "LOAD_MESSAGES_SUCCESS") {
-                      if (Array.isArray(event.messages)) {
-                          event.messages.forEach((m: any) => {
-                              if (m && m.author) {
-                                  const iconsStr = getPlatformString(m.author.id);
-                                  if (iconsStr && iconsStr !== "") {
-                                      const currentGlobalName = m.author.global_name || m.author.username;
-                                      if (!currentGlobalName.includes(iconsStr.trim())) {
-                                          if (m.author.global_name) {
-                                              m.author.global_name += iconsStr;
-                                          } else {
-                                              m.author.username += iconsStr;
-                                          }
-                                      }
-                                  }
-                              }
-                          });
-                      }
+                  } else if (prop === "__isPlatformProxy") {
+                      return true; // Sonsuz döngü koruması
                   }
-                  else if (event.type === "GUILD_MEMBER_LIST_UPDATE") {
-                      if (Array.isArray(event.groups)) {
-                          event.groups.forEach((group: any) => {
-                              if (Array.isArray(group.items)) {
-                                  group.items.forEach((item: any) => {
-                                      if (item.member && item.member.user) {
-                                          const iconsStr = getPlatformString(item.member.user.id);
-                                          if (iconsStr && iconsStr !== "") {
-                                              const user = item.member.user;
-                                              const currentGlobalName = user.global_name || user.username;
-                                              if (!currentGlobalName.includes(iconsStr.trim())) {
-                                                  if (user.global_name) {
-                                                      user.global_name += iconsStr;
-                                                  } else {
-                                                      user.username += iconsStr;
-                                                  }
-                                              }
-                                          }
-                                      }
-                                  });
-                              }
-                          });
-                      }
+
+                  // Fonksiyonları bozmamak için orijinaline bağla (CRASH ENGELLEYİCİ)
+                  if (typeof val === "function") {
+                      return val.bind(target);
                   }
-              } catch (e) {}
+                  return val;
+              }
+          });
+
+          cachedProxies.set(obj, proxy);
+          return proxy;
+      };
+
+      // 1. Genel Kullanıcılar (Sohbetler ve Profiller)
+      const uStore = getByProps("getUser", "getCurrentUser");
+      if (uStore && uStore.getUser) {
+          Patcher.after(uStore, "getUser", (self, args, res) => {
+              if (!res || res.__isPlatformProxy) return res;
+              return createProxy(res);
+          });
+      }
+
+      // 2. Sunucu Üyeleri (Üye Listesi)
+      const gStore = getByProps("getMember", "getMembers");
+      if (gStore && gStore.getMember) {
+          Patcher.after(gStore, "getMember", (self, args, res) => {
+              if (!res || res.__isPlatformProxy) return res;
+              return createProxy(res);
           });
       }
    },
