@@ -1,34 +1,15 @@
 import { Plugin, registerPlugin } from 'enmity/managers/plugins';
 import { getByProps } from 'enmity/metro';
-import { React } from 'enmity/metro/common';
 import { create } from 'enmity/patcher';
 import manifest from '../manifest.json';
 
-const { Text } = getByProps("View", "Text") || {};
 const Patcher = create('PlatformIndicators');
 
 const PlatformIndicators: Plugin = {
    ...manifest,
 
    onStart() {
-      const getModules = () => {
-          try {
-              return (window as any).enmity?.metro?.getModules?.() || [];
-          } catch(e) {
-              return [];
-          }
-      };
-
-      const findByName = (name: string) => {
-          for (const m of getModules()) {
-              if (m && m.default && m.default.name === name) return m;
-              if (m && m.name === name) return m;
-              if (m && m.default && m.default.displayName === name) return m;
-              if (m && m.displayName === name) return m;
-          }
-          return null;
-      };
-
+      // Orijinal Enmity kütüphanesi üzerinden Store'ları bulalım
       const getStore = (name: string) => {
           try {
               return (window as any).enmity?.metro?.getByStoreName?.(name) || null;
@@ -41,10 +22,9 @@ const PlatformIndicators: Plugin = {
       const SessionStore = getStore("SessionsStore") || getByProps("getSessions");
       const UserStore = getStore("UserStore") || getByProps("getCurrentUser");
 
-      // ÖNCEKİ HATANIN KAYNAĞI: React Native'de <Text> içine <View> konulmaz.
-      // Bu yüzden sadece string veya <Text> dönmeliyiz!
+      // İkonları oluşturan yardımcı fonksiyon
       const getPlatformString = (userId: string) => {
-          if (!PresenceStore || !UserStore) return null;
+          if (!PresenceStore || !UserStore) return " [❓]"; // Store bulunamadıysa soru işareti
           
           let statuses;
           try {
@@ -65,13 +45,13 @@ const PlatformIndicators: Plugin = {
                   }
               }
           } catch(e) {
-              return " ⚠️"; 
+              return " [⚠️]"; // Okuma hatası
           }
           
-          if (!statuses) return null;
+          if (!statuses) return ""; // Çevrimdışı
           
           const platforms = Object.keys(statuses);
-          if (platforms.length === 0) return null;
+          if (platforms.length === 0) return "";
           
           let icons = [];
           if (platforms.includes("desktop")) icons.push("💻");
@@ -80,156 +60,100 @@ const PlatformIndicators: Plugin = {
           if (platforms.includes("embedded")) icons.push("🎮");
           if (platforms.includes("vr")) icons.push("🥽");
           
-          if (icons.length === 0) return null;
+          if (icons.length === 0) return "";
 
-          return " " + icons.join(" ");
+          return " " + icons.join("");
       };
 
-      const patchComponent = (module: any, prop: string, callback: any) => {
-          if (!module || !module[prop]) return;
-          if (typeof module[prop] === "function") {
-              Patcher.after(module, prop, callback);
-          } else if (typeof module[prop] === "object") {
-              if (module[prop].type) Patcher.after(module[prop], "type", callback);
-              else if (module[prop].render) Patcher.after(module[prop], "render", callback);
-              else Patcher.after(module, prop, callback);
-          }
-      };
-
-      // 1. Profil İsimleri (DisplayName)
-      const DisplayNameModule = getByProps("DisplayName");
-      if (DisplayNameModule) {
-          patchComponent(DisplayNameModule, "DisplayName", (self: any, args: any, res: any) => {
-              try {
-                  const user = args[0]?.user;
-                  if (!user) return res;
-                  const iconsStr = getPlatformString(user.id);
-                  if (!iconsStr) return res;
-
-                  if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      // Text içine Text koymak güvenlidir veya direkt string birleştirmek
-                      res.props.children = (
-                          <Text>
-                              {originalChildren}
-                              <Text>{iconsStr}</Text>
-                          </Text>
-                      );
-                  }
-              } catch (e) {}
-              return res;
-          });
-      }
-
-      // 2. Üye Listesi Satırları (GuildMemberRow / MemberListItem / UserRow)
-      const memberModules = [
-          getByProps("GuildMemberRow"),
-          getByProps("MemberListItem"),
-          findByName("UserRow"),
-          findByName("MemberListItem"),
-          findByName("GuildMemberRow")
-      ];
-
-      memberModules.forEach(mod => {
-          if (!mod) return;
-          const propName = mod.default ? "default" : (mod.MemberListItem ? "MemberListItem" : (mod.GuildMemberRow ? "GuildMemberRow" : (mod.UserRow ? "UserRow" : null)));
-          if (propName) {
-              patchComponent(mod, propName, (self: any, args: any, res: any) => {
-                  try {
-                      const user = args[0]?.user;
-                      if (!user) return res;
-                      const iconsStr = getPlatformString(user.id);
-                      if (!iconsStr) return res;
-
-                      // Üye satırı genelde bir View döndürür ama ismin olduğu Text'i bulmak zor.
-                      // En güvenlisi: Bütün satırı sarmalamak yerine, props.children dizisinin sonuna Text olarak eklemek
-                      // Veya eğer res.props.children bir diziyse, en sona eklemek
-                      if (res && res.props && Array.isArray(res.props.children)) {
-                          res.props.children.push(<Text key="platform-icons" style={{ alignSelf: 'center' }}>{iconsStr}</Text>);
-                      }
-                  } catch (e) {}
-                  return res;
-              });
-          }
-      });
-
-      // 3. Sohbet Mesajları (MessageHeader)
-      const MessageTimestamp = getByProps("MessageTimestamp");
-      if (MessageTimestamp) {
-          patchComponent(MessageTimestamp, "default", (self: any, args: any, res: any) => {
-              try {
-                  const message = args[0]?.message;
-                  if (!message || !message.author) return res;
-                  const iconsStr = getPlatformString(message.author.id);
-                  if (!iconsStr) return res;
-
-                  if (res && res.props && Array.isArray(res.props.children)) {
-                      res.props.children.push(<Text key="platform-icons">{iconsStr}</Text>);
-                  } else if (res && res.props) {
-                      const originalChildren = res.props.children;
-                      res.props.children = (
-                          <Text>
-                              {originalChildren}
-                              <Text>{iconsStr}</Text>
-                          </Text>
-                      );
-                  }
-              } catch(e) {}
-              return res;
-          });
-      }
-
-      // AŞIRI GARANTİ VERİ YAMASI: (UI Yamaları yine çalışmazsa diye, doğrudan mesaj verisini değiştiriyoruz)
-      // Bu yama Enmity'de SecretMessage'da çalıştığı gibi kesin çalışacaktır!
+      // KESİN ÇÖZÜM: Arayüz (UI) Yamalarını çöpe atıp, Veri Akışına (FluxDispatcher) sızıyoruz.
+      // Discord'un nesneleri dondurulmuş (frozen) olabileceği için her zaman kopyasını (clone) oluşturarak değiştiriyoruz.
       const FluxDispatcher = getByProps("dispatch", "subscribe");
+      
       if (FluxDispatcher) {
           Patcher.before(FluxDispatcher, "dispatch", (self, args) => {
               try {
                   const event = args[0];
-                  if (event && (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE")) {
+                  if (!event) return;
+
+                  // 1. Sohbet Mesajlarında İsimlerin Yanına Ekle
+                  if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
                       if (event.message && event.message.author) {
                           const iconsStr = getPlatformString(event.message.author.id);
-                          if (iconsStr && event.message.content !== undefined) {
-                              // Sadece mesajın sonuna ikonu ekle (sadece sohbet için kesin çözüm)
-                              if (!event.message.content.includes(iconsStr)) {
-                                  // Mesaj metnine dokunmamak için yazar adını (username) değiştirmeyi deneriz, 
-                                  // ama username değişimi bazı yerlerde patlayabilir.
-                                  // Bu yüzden mesaj içeriğinin en sonuna ekliyoruz (SecretMessage mantığı)
-                                  // event.message.content += ` ${iconsStr}`;
-                                  
-                                  // Aslında en mantıklısı yazar ismine eklemek!
-                                  if (!event.message.author.global_name?.includes(iconsStr) && !event.message.author.username.includes(iconsStr)) {
-                                      if (event.message.author.global_name) {
-                                          event.message.author.global_name += iconsStr;
-                                      } else {
-                                          event.message.author.username += iconsStr;
+                          if (iconsStr && iconsStr !== "") {
+                              const author = event.message.author;
+                              const currentGlobalName = author.global_name || author.username;
+                              
+                              if (!currentGlobalName.includes(iconsStr.trim())) {
+                                  // Objenin donukluğunu kırmak için kopyalıyoruz
+                                  event.message = {
+                                      ...event.message,
+                                      author: {
+                                          ...author,
+                                          global_name: currentGlobalName + iconsStr,
+                                          username: author.username + iconsStr
                                       }
-                                  }
+                                  };
                               }
                           }
                       }
-                  } else if (event && event.type === "LOAD_MESSAGES_SUCCESS") {
+                  } 
+                  // Geçmiş mesajları yüklerken
+                  else if (event.type === "LOAD_MESSAGES_SUCCESS") {
                       if (Array.isArray(event.messages)) {
-                          event.messages.forEach((m: any) => {
+                          event.messages = event.messages.map((m: any) => {
                               if (m && m.author) {
                                   const iconsStr = getPlatformString(m.author.id);
-                                  if (iconsStr) {
-                                      if (!m.author.global_name?.includes(iconsStr) && !m.author.username.includes(iconsStr)) {
-                                          if (m.author.global_name) {
-                                              m.author.global_name += iconsStr;
-                                          } else {
-                                              m.author.username += iconsStr;
-                                          }
+                                  if (iconsStr && iconsStr !== "") {
+                                      const currentGlobalName = m.author.global_name || m.author.username;
+                                      if (!currentGlobalName.includes(iconsStr.trim())) {
+                                          return {
+                                              ...m,
+                                              author: {
+                                                  ...m.author,
+                                                  global_name: currentGlobalName + iconsStr,
+                                                  username: m.author.username + iconsStr
+                                              }
+                                          };
                                       }
                                   }
+                              }
+                              return m;
+                          });
+                      }
+                  }
+                  // 2. Üye Listesinde İsimlerin Yanına Ekle (Guild Member List)
+                  else if (event.type === "GUILD_MEMBER_LIST_UPDATE") {
+                      if (Array.isArray(event.groups)) {
+                          event.groups.forEach((group: any) => {
+                              if (Array.isArray(group.items)) {
+                                  group.items.forEach((item: any) => {
+                                      if (item.member && item.member.user) {
+                                          const iconsStr = getPlatformString(item.member.user.id);
+                                          if (iconsStr && iconsStr !== "") {
+                                              const user = item.member.user;
+                                              const currentGlobalName = user.global_name || user.username;
+                                              
+                                              if (!currentGlobalName.includes(iconsStr.trim())) {
+                                                  // Objenin kopyasını al
+                                                  item.member = {
+                                                      ...item.member,
+                                                      user: {
+                                                          ...user,
+                                                          global_name: currentGlobalName + iconsStr,
+                                                          username: user.username + iconsStr
+                                                      }
+                                                  };
+                                              }
+                                          }
+                                      }
+                                  });
                               }
                           });
                       }
                   }
-              } catch(e) {}
+              } catch (e) {}
           });
       }
-
    },
 
    onStop() {
